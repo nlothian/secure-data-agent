@@ -122,7 +122,19 @@ export interface LlmActivityState {
    * pane status takes over) or the stream ends.
    */
   preparingToolCall: { name: string | null } | null;
-  modelDownload: { label: string; pct: number; fromCache: boolean } | null;
+  /**
+   * Local model load in flight. `phase: 'fetch'` while files stream from the
+   * network or the browser cache (`pct` is meaningful); `phase: 'init'` once
+   * every file is in and ONNX Runtime is building the WebGPU session.
+   */
+  modelDownload: LocalModelDownloadState | null;
+}
+
+export interface LocalModelDownloadState {
+  label: string;
+  pct: number;
+  fromCache: boolean;
+  phase: 'fetch' | 'init';
 }
 
 export interface ExecutionPanelSnapshot {
@@ -807,12 +819,13 @@ export function setLlmPreparingToolCall(
 }
 
 export function setLocalLlmDownloadProgress(
-  next: { label: string; pct: number; fromCache: boolean } | null,
+  next: LocalModelDownloadState | null,
 ): void {
   if (
     snapshot.llm.modelDownload?.label === next?.label &&
     snapshot.llm.modelDownload?.pct === next?.pct &&
-    snapshot.llm.modelDownload?.fromCache === next?.fromCache
+    snapshot.llm.modelDownload?.fromCache === next?.fromCache &&
+    snapshot.llm.modelDownload?.phase === next?.phase
   ) {
     return;
   }

@@ -9,6 +9,7 @@ This app uses Gemma 4 to demonstrate how AI agents work, end to end.
 It is a fully functional, fully private agent environment running entirely in your browser, so feel free to experiment.
 
 Key features:
+- **Local inference** — Gemma runs on your GPU via transformers.js (ONNX Runtime on WebGPU). The model is a one-off download from Hugging Face, cached by your browser for later visits.
 - **Tool use** — run Python (via Pyodide), SQL (via DuckDB), and React, all in the browser.
 - **Data loading** — load CSV or Parquet files from a sandboxed local folder (via the HTML5 File System Access API) or from remote servers (via DuckDB).
 - **Context management** — local models have a smaller context window, so the app manages it carefully using sub-agents and compaction.

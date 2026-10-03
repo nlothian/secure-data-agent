@@ -5,11 +5,23 @@ export interface WebGpuStatus {
   reason?: string;
   /**
    * The adapter's `maxBufferSize` limit in bytes, when an adapter was
-   * obtained. LiteRT/MediaPipe loads Gemma weights into a single GPU storage
-   * buffer; browsers that cap this low (Firefox currently pins it at 1 GiB)
-   * cannot hold the model. Undefined when no adapter was available.
+   * obtained. ONNX Runtime's WebGPU backend uploads each weight tensor as its
+   * own GPU buffer, so the largest Gemma tensor must fit under this limit;
+   * browsers that cap it low (Firefox currently pins it at 1 GiB) cannot hold
+   * the model. Undefined when no adapter was available.
    */
   maxBufferSize?: number;
+  /**
+   * The adapter's `maxStorageBufferBindingSize` limit in bytes. Weight
+   * tensors are bound as storage buffers, so this caps the largest tensor
+   * independently of `maxBufferSize`. Undefined when no adapter was available.
+   */
+  maxStorageBufferBindingSize?: number;
+  /**
+   * Whether the adapter exposes `shader-f16`. The q4f16 Gemma weights run
+   * fastest (and on some ORT kernels, only) with native f16 shaders.
+   */
+  f16?: boolean;
 }
 
 let cached: WebGpuStatus | null = null;
@@ -37,7 +49,10 @@ export async function detectWebGpu(): Promise<WebGpuStatus> {
     }
     try {
       const adapter = (await gpu.requestAdapter({ powerPreference: 'high-performance' })) as
-        | { limits?: { maxBufferSize?: number } }
+        | {
+            limits?: { maxBufferSize?: number; maxStorageBufferBindingSize?: number };
+            features?: { has(name: string): boolean };
+          }
         | null;
       if (!adapter) {
         return {
@@ -49,7 +64,12 @@ export async function detectWebGpu(): Promise<WebGpuStatus> {
         typeof adapter.limits?.maxBufferSize === 'number'
           ? adapter.limits.maxBufferSize
           : undefined;
-      return { supported: true, maxBufferSize };
+      const maxStorageBufferBindingSize =
+        typeof adapter.limits?.maxStorageBufferBindingSize === 'number'
+          ? adapter.limits.maxStorageBufferBindingSize
+          : undefined;
+      const f16 = adapter.features?.has('shader-f16') ?? false;
+      return { supported: true, maxBufferSize, maxStorageBufferBindingSize, f16 };
     } catch (err) {
       return {
         supported: false,

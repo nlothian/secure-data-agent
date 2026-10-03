@@ -1,32 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from 'react';
+import { useEffect, useRef, useState } from 'react';
 import useLLMConfig from '../hooks/useLLMConfig';
 import useLocalGemmaSwitcher from '../hooks/useLocalGemmaSwitcher';
 import {
+  DEFAULT_LOCAL_GEMMA_ID,
   formatGB,
+  getLocalGemmaModel,
+  isLocalGemmaId,
   LOCAL_GEMMA_MODELS,
 } from '../lib/localLlm/models';
-import {
-  getCustomModelsSnapshot,
-  registerCustomModel,
-  resolveActiveLocalModel,
-  subscribeCustomModels,
-  type CustomLocalModel,
-} from '../lib/localLlm/customModels';
-import {
-  isFsAccessFilePickerSupported,
-  persistPickedHandle,
-} from '../lib/localLlm/customModelStore';
 import { detectWebGpu, type WebGpuStatus } from '../lib/localLlm/webgpu';
 import { isLocalGemmaEndpoint, LOCAL_GEMMA_ENDPOINT } from '../types/llm';
-import { ChevronDownIcon, ChevronRightIcon } from './Icons';
-
-const EMPTY_CUSTOM_MODELS: readonly CustomLocalModel[] = [];
+import { ChevronDownIcon } from './Icons';
 
 export interface ModelSelectorProps {
   onModelMenuOpenChange?: (setter: (open: boolean) => void) => void;
@@ -37,23 +21,23 @@ export default function ModelSelector({
   onModelMenuOpenChange,
   onRequestModelReady,
 }: ModelSelectorProps) {
-  const { config, setActiveEndpoint, setModel, setThinkingEnabled } = useLLMConfig();
+  const { config, ready, setModel, setThinkingEnabled } = useLLMConfig();
   const modelSwitcher = useLocalGemmaSwitcher({ loadOnApply: true });
 
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<WebGpuStatus | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Registry-driven view of registered custom models so a model restored
-  // elsewhere (the restore banner) or re-picked appears here too. Replaces
-  // the old per-instance local state that never reflected those.
-  const customModels = useSyncExternalStore(
-    subscribeCustomModels,
-    getCustomModelsSnapshot,
-    () => EMPTY_CUSTOM_MODELS,
-  );
-  const fsAccessSupported = isFsAccessFilePickerSupported();
+  // Normalise a stale local model id (e.g. a `custom:<name>` entry left in
+  // localStorage by the removed custom-model picker) to the default, so the label,
+  // active-option highlight and the inference path all agree.
+  const storedLocalId = config.models[LOCAL_GEMMA_ENDPOINT];
+  useEffect(() => {
+    if (!ready) return;
+    if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return;
+    if (isLocalGemmaId(storedLocalId)) return;
+    setModel(LOCAL_GEMMA_ENDPOINT, DEFAULT_LOCAL_GEMMA_ID);
+  }, [ready, config.activeEndpoint, storedLocalId, setModel]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -95,66 +79,10 @@ export default function ModelSelector({
     );
   }, [onRequestModelReady, modelSwitcher.request]);
 
-  const commitCustom = useCallback(
-    (id: string): void => {
-      setActiveEndpoint(LOCAL_GEMMA_ENDPOINT);
-      setModel(LOCAL_GEMMA_ENDPOINT, id);
-      void (async () => {
-        try {
-          const { ensureLoaded } = await import('../lib/localLlm/llmService');
-          await ensureLoaded(id);
-        } catch (err) {
-          console.error('Failed to load custom model:', err);
-        }
-      })();
-    },
-    [setActiveEndpoint, setModel],
-  );
-
-  // Fallback path: plain <input type="file"> yields a transient File only,
-  // so this registration is session-only (no reload persistence). Used when
-  // window.showOpenFilePicker is unavailable.
-  const onFileChosen = useCallback(
-    (file: File): void => {
-      const m = registerCustomModel(file);
-      commitCustom(m.id);
-      setAdvancedOpen(false);
-      setModelMenuOpen(false);
-    },
-    [commitCustom],
-  );
-
-  // Preferred path: showOpenFilePicker returns a FileSystemFileHandle which
-  // customModelStore persists to IndexedDB so the model survives a reload.
-  // Both paths funnel through registerCustomModel (inside persistPickedHandle)
-  // so the two pickers cannot diverge.
-  const onPickViaFsAccess = useCallback(async (): Promise<void> => {
-    try {
-      const [handle] = await window.showOpenFilePicker({
-        multiple: false,
-        types: [
-          {
-            description: 'Gemma .task model',
-            accept: { 'application/octet-stream': ['.task'] },
-          },
-        ],
-      });
-      if (!handle) return;
-      const m = await persistPickedHandle(handle);
-      commitCustom(m.id);
-      setAdvancedOpen(false);
-      setModelMenuOpen(false);
-    } catch (err) {
-      // AbortError = user dismissed the picker — silent.
-      if ((err as { name?: string } | null)?.name === 'AbortError') return;
-      console.error('Custom model pick failed:', err);
-    }
-  }, [commitCustom]);
-
   const ep = config.activeEndpoint;
   const rawModel = ep ? config.models[ep] : '';
   const isLocal = ep ? isLocalGemmaEndpoint(ep) : false;
-  const resolvedActive = isLocal ? resolveActiveLocalModel(rawModel) : undefined;
+  const resolvedActive = isLocal ? getLocalGemmaModel(rawModel) : undefined;
   const labelText = isLocal
     ? resolvedActive?.label ?? 'Choose model'
     : rawModel || 'Choose model';
@@ -205,6 +133,7 @@ export default function ModelSelector({
                   key={m.id}
                   type="button"
                   role="menuitem"
+                  title={m.notes}
                   className={
                     'chat-model-option' +
                     (isActive ? ' chat-model-option--active' : '')
@@ -229,81 +158,14 @@ export default function ModelSelector({
                 </button>
               );
             })}
-
-            {customModels.map((cm) => (
-              <button
-                key={cm.id}
-                type="button"
-                role="menuitem"
-                className={
-                  'chat-model-option' +
-                  (ep === LOCAL_GEMMA_ENDPOINT && rawModel === cm.id
-                    ? ' chat-model-option--active'
-                    : '')
-                }
-                onClick={() => {
-                  commitCustom(cm.id);
-                  setModelMenuOpen(false);
-                }}
-              >
-                <span className="chat-model-option-main">
-                  <span className="chat-model-option-label">{cm.label}</span>
-                </span>
-              </button>
-            ))}
-
-            <div className="chat-model-divider" role="separator" />
-
-            <button
-              type="button"
-              className="chat-model-advanced-toggle"
-              aria-expanded={advancedOpen}
-              onClick={() => setAdvancedOpen((v) => !v)}
-            >
-              <ChevronRightIcon
-                size={14}
-                style={{
-                  transform: advancedOpen ? 'rotate(90deg)' : 'none',
-                  transition: 'transform 120ms',
-                }}
-              />
-              <span className="chat-model-option-label">Advanced</span>
-            </button>
-
-            {advancedOpen && (
-              <div className="chat-model-advanced-panel">
-                {fsAccessSupported ? (
-                  <button
-                    type="button"
-                    className="chat-model-fileinput"
-                    onClick={onPickViaFsAccess}
-                  >
-                    <span>Choose .task file…</span>
-                  </button>
-                ) : (
-                  <label className="chat-model-fileinput">
-                    <input
-                      type="file"
-                      accept=".task"
-                      onChange={(e) => {
-                        const f = e.currentTarget.files?.[0];
-                        e.currentTarget.value = '';
-                        if (f) onFileChosen(f);
-                      }}
-                    />
-                    <span>Choose .task file…</span>
-                  </label>
-                )}
-              </div>
-            )}
           </div>
         )}
         {pendingConfirm && (
           <div className="chat-model-confirm" role="alert">
             <p className="chat-model-confirm-text">
               {pendingConfirm.label} is about{' '}
-              {formatGB(pendingConfirm.approxBytes)}. It will download and cache
-              now.
+              {formatGB(pendingConfirm.approxBytes)} to download. It is fetched
+              once from Hugging Face and cached in this browser.
             </p>
             <div className="chat-model-confirm-actions">
               <button

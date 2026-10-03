@@ -5,7 +5,7 @@ import SandboxSettingsSection from './SandboxSettingsSection';
 import { CloseIcon } from './Icons';
 import useLLMConfig from '../hooks/useLLMConfig';
 import { LOCAL_GEMMA_ENDPOINT } from '../types/llm';
-import { DEFAULT_LOCAL_GEMMA_ID, type LocalGemmaId } from '../lib/localLlm/models';
+import { resolveActiveLocalModelIdOrDefault } from '../lib/localLlm/models';
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -82,9 +82,7 @@ export default function SettingsOverlay({ open, onClose }: SettingsOverlayProps)
 
   const handleClose = useCallback((): void => {
     if (config.activeEndpoint === LOCAL_GEMMA_ENDPOINT) {
-      const modelId =
-        (config.models[LOCAL_GEMMA_ENDPOINT] as LocalGemmaId | undefined) ??
-        DEFAULT_LOCAL_GEMMA_ID;
+      const modelId = resolveActiveLocalModelIdOrDefault(config);
       void (async () => {
         try {
           const { ensureLoaded } = await import('../lib/localLlm/llmService');
@@ -95,7 +93,7 @@ export default function SettingsOverlay({ open, onClose }: SettingsOverlayProps)
       })();
     }
     onClose();
-  }, [config.activeEndpoint, config.models, onClose]);
+  }, [config, onClose]);
 
   useEffect(() => {
     if (!open) return;

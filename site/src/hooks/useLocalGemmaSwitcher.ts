@@ -6,7 +6,7 @@ import {
   type LocalGemmaId,
   type LocalGemmaModel,
 } from '../lib/localLlm/models';
-import { isModelCached } from '../lib/localLlm/opfsCache';
+import { isModelCached } from '../lib/localLlm/modelCache';
 
 export type SwitcherState =
   | { phase: 'idle' }
@@ -66,7 +66,7 @@ export default function useLocalGemmaSwitcher(
       setState({ phase: 'checking', modelId });
       void (async () => {
         try {
-          const cached = await isModelCached(model.url);
+          const cached = await isModelCached(model);
           if (cached) {
             commit(modelId);
             setState({ phase: 'idle' });

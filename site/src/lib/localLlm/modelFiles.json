@@ -1,0 +1,90 @@
+{
+  "onnx-community/gemma-4-E2B-it-ONNX": {
+    "required": [
+      {
+        "path": "config.json",
+        "bytes": 5549
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 19439251
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 18807
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx",
+        "bytes": 5621
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx_data",
+        "bytes": 1590689792
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx",
+        "bytes": 673231
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx_data",
+        "bytes": 1519700992
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 238
+      }
+    ],
+    "optional": [
+      {
+        "path": "chat_template.jinja",
+        "bytes": 16317
+      }
+    ]
+  },
+  "onnx-community/gemma-4-E4B-it-ONNX": {
+    "required": [
+      {
+        "path": "config.json",
+        "bytes": 5741
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 19439251
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 18807
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx",
+        "bytes": 5619
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx_data",
+        "bytes": 2017460224
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx",
+        "bytes": 850610
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx_data",
+        "bytes": 2074847232
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx_data_1",
+        "bytes": 812318720
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 238
+      }
+    ],
+    "optional": [
+      {
+        "path": "chat_template.jinja",
+        "bytes": 16317
+      }
+    ]
+  }
+}

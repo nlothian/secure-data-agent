@@ -5,16 +5,18 @@ import { CloseIcon } from './Icons';
 import { detectWebGpu } from '../lib/localLlm/webgpu';
 
 /**
- * LiteRT/MediaPipe loads the Gemma weights into a single GPU storage buffer.
- * Browsers that cap `maxBufferSize` below the model size cannot run the agent
- * at all — Firefox currently pins this at exactly 1 GiB, while Chrome exposes
+ * ONNX Runtime's WebGPU backend binds each weight tensor as its own storage
+ * buffer, so the binding limit has to fit the single largest tensor rather
+ * than the whole model. For the q4f16 Gemma 4 exports that is the
+ * per-layer-input embedding table, roughly 1.2–1.4 GB. Firefox currently pins
+ * `maxBufferSize` at exactly 1 GiB, which is too small; Chrome and Edge expose
  * the full adapter limit (typically several GB).
  *
- * 2.5 GB is the documented floor for the agent to work. Tune this single
- * constant if the requirement changes.
+ * Provisional: the exact floor is to be finalised by the transformers.js
+ * spike. Tune this single constant if the requirement changes.
  */
-const REQUIRED_MAX_BUFFER_BYTES = 2.5 * 1024 ** 3;
-const REQUIRED_LABEL = '2.5 GB';
+const REQUIRED_GPU_BUFFER_BYTES = 1.5 * 1024 ** 3;
+const REQUIRED_LABEL = '1.5 GB';
 
 // Above the tour overlay (SpotlightOverlay svg z 80, tour card z 84) and the
 // compaction preview (z 95) so a "this browser can't run the app" warning is
@@ -32,7 +34,7 @@ function formatGiB(bytes: number | undefined): string {
  * resolves, and nothing when the adapter reports a large enough buffer.
  */
 export default function GpuBufferWarningBanner(): JSX.Element | null {
-  const [maxBufferSize, setMaxBufferSize] = useState<number | undefined>(undefined);
+  const [effectiveLimit, setEffectiveLimit] = useState<number | undefined>(undefined);
   const [resolved, setResolved] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
@@ -40,7 +42,13 @@ export default function GpuBufferWarningBanner(): JSX.Element | null {
     let cancelled = false;
     detectWebGpu().then((status) => {
       if (cancelled) return;
-      setMaxBufferSize(status.maxBufferSize);
+      // A tensor must fit in one buffer AND one storage binding.
+      setEffectiveLimit(
+        Math.min(
+          status.maxBufferSize ?? 0,
+          status.maxStorageBufferBindingSize ?? Infinity,
+        ),
+      );
       setResolved(true);
     });
     return () => {
@@ -53,7 +61,7 @@ export default function GpuBufferWarningBanner(): JSX.Element | null {
   if (dismissed) return null;
 
   const ok =
-    typeof maxBufferSize === 'number' && maxBufferSize >= REQUIRED_MAX_BUFFER_BYTES;
+    typeof effectiveLimit === 'number' && effectiveLimit >= REQUIRED_GPU_BUFFER_BYTES;
   if (ok) return null;
 
   if (typeof document === 'undefined') return null;
@@ -87,9 +95,10 @@ export default function GpuBufferWarningBanner(): JSX.Element | null {
         ⚠
       </span>
       <span>
-        <strong>Gemma Data Agent won&rsquo;t run in this browser.</strong> It
-        needs a GPU buffer of at least {REQUIRED_LABEL}; this browser caps it at{' '}
-        {formatGiB(maxBufferSize)}. Use Google Chrome, which supports this.
+        <strong>Gemma Data Agent won&rsquo;t run in this browser.</strong> Its
+        GPU buffer limit is {formatGiB(effectiveLimit)}; the model&rsquo;s
+        largest weight tensor needs at least {REQUIRED_LABEL} in one buffer. Use
+        Google Chrome or Edge.
       </span>
       <button
         type="button"

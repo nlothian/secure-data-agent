@@ -15,7 +15,7 @@ import {
   type CustomEndpoint,
 } from '../types/llm';
 import {
-  DEFAULT_LOCAL_GEMMA_ID,
+  resolveActiveLocalModelIdOrDefault,
   LOCAL_GEMMA_MODELS,
   formatGB,
   type LocalGemmaId,
@@ -542,13 +542,14 @@ function LocalGemmaRow({
       />
       <div style={styles.middle}>
         <div style={styles.builtInLabel}>Local Gemma 4 (WebGPU)</div>
-        <div style={styles.builtInUrl}>Runs in your browser via MediaPipe</div>
+        <div style={styles.builtInUrl}>Runs in your browser via transformers.js (ONNX Runtime, WebGPU)</div>
         {!supported && !detecting && reason ? (
           <p style={styles.localHint}>{reason}</p>
         ) : null}
         {supported ? (
           <p style={styles.localHint}>
-            Models are downloaded once and cached. Tool support is best-effort on local models.
+            Models are downloaded once from Hugging Face and cached by your browser. Tool
+            support is best-effort on local models.
           </p>
         ) : null}
       </div>
@@ -569,8 +570,8 @@ function LocalGemmaRow({
         {pending ? (
           <div style={styles.localConfirm} role="alert">
             <p style={styles.localConfirmText}>
-              {pending.label} is about {formatGB(pending.approxBytes)}.
-              It will download and cache when you close Settings.
+              {pending.label} is about {formatGB(pending.approxBytes)} to
+              download. It will download and cache when you close Settings.
             </p>
             <div style={styles.localConfirmActions}>
               <button
@@ -613,8 +614,7 @@ export default function LLMSettingsSection() {
   if (!ready) return null;
 
   const localActive = config.activeEndpoint === LOCAL_GEMMA_ENDPOINT;
-  const localSelectedId =
-    (config.models[LOCAL_GEMMA_ENDPOINT] as LocalGemmaId | undefined) ?? DEFAULT_LOCAL_GEMMA_ID;
+  const localSelectedId = resolveActiveLocalModelIdOrDefault(config);
 
   const handleLocalPickModel = (id: LocalGemmaId): void => {
     setModel(LOCAL_GEMMA_ENDPOINT, id);

@@ -58,7 +58,6 @@ import {
   StopIcon,
 } from './Icons';
 import ModelSelector from './ModelSelector';
-import CustomModelRestoreBanner from './CustomModelRestoreBanner';
 import Throbber from './Throbber';
 import MessagesView from './MessagesView';
 
@@ -178,11 +177,11 @@ export default function ChatSidebar() {
   }, []);
 
   // Eager-load the active local model on mount so the first prompt doesn't
-  // wait for MediaPipe's createFromOptions. STRICTLY gated on isModelCached:
-  // boot must never trigger a multi-GB CDN download. Predefined-only — custom
-  // models read from disk (no download) and are warmed by the restore-gesture
-  // commit instead. Idempotent with streamLocalGemma's submit-path
-  // ensureLoaded (it dedupes on the in-flight/loaded singleton).
+  // wait for weight upload + WebGPU session creation. STRICTLY gated on
+  // isModelCached: boot must never trigger a multi-GB Hugging Face download
+  // (in local-models dev mode isModelCached is always true, since nothing is
+  // downloaded). Idempotent with streamLocalGemma's submit-path ensureLoaded
+  // (it dedupes on the in-flight/loaded singleton).
   useEffect(() => {
     if (!cfgReady) return;
     if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return;
@@ -191,16 +190,16 @@ export default function ChatSidebar() {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
     void (async () => {
-      const { resolveActiveLocalModelIdOrDefault, resolveActiveLocalModel } =
-        await import('../lib/localLlm/customModels');
+      const { resolveActiveLocalModelIdOrDefault, getLocalGemmaModel } =
+        await import('../lib/localLlm/models');
       const id = resolveActiveLocalModelIdOrDefault(config);
-      const resolved = resolveActiveLocalModel(id);
-      if (cancelled || resolved?.kind !== 'predefined') return;
+      const model = getLocalGemmaModel(id);
+      if (cancelled || !model) return;
       const { detectWebGpu } = await import('../lib/localLlm/webgpu');
       const gpu = await detectWebGpu();
       if (cancelled || !gpu.supported) return;
-      const { isModelCached } = await import('../lib/localLlm/opfsCache');
-      const cached = await isModelCached(resolved.model.url);
+      const { isModelCached } = await import('../lib/localLlm/modelCache');
+      const cached = await isModelCached(model);
       if (cancelled || !cached) return;
       const run = (): void => {
         if (cancelled) return;
@@ -318,10 +317,10 @@ export default function ChatSidebar() {
   // Compute the post-compaction prompt size for the local-Gemma path so the
   // gauge reflects the surviving context immediately instead of resetting to
   // zero. Cloud endpoints have no client-side tokenizer — return null to fall
-  // back to the next response's usage event. Safe to call `sizeInTokens` here
-  // because compaction has already resolved (no MediaPipe decode in flight).
+  // back to the next response's usage event. `sizeInTokens` runs the model's
+  // tokenizer in the LLM worker and resolves null if it isn't loaded.
   const estimatePostCompactionUsage = useCallback(
-    (msgs: ChatMessage[]): TokenUsage | null => {
+    async (msgs: ChatMessage[]): Promise<TokenUsage | null> => {
       if (!isLocalGemmaEndpoint(config.activeEndpoint)) return null;
       const thinkingEnabled =
         config.thinkingEnabled?.[LOCAL_GEMMA_ENDPOINT] ?? false;
@@ -331,7 +330,7 @@ export default function ChatSidebar() {
         buildAgentTools(features),
         thinkingEnabled,
       );
-      const tokens = sizeInTokens(prompt);
+      const tokens = await sizeInTokens(prompt);
       if (tokens === null) return null;
       return { input: tokens, output: 0 };
     },
@@ -667,7 +666,6 @@ export default function ChatSidebar() {
               onModelMenuOpenChange={handleModelMenuSetterReady}
               onRequestModelReady={handleRequestModelReady}
             />
-            <CustomModelRestoreBanner />
           </div>
           <div className="chat-header-actions">
             {tokenUsage && typeof tokenUsage.tps === 'number' && tokenUsage.tps > 0 && (

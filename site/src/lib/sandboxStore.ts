@@ -138,7 +138,7 @@ export function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-// Exported so other persisted stores (e.g. customModelStore) can reuse the
+// Exported so other persisted stores can reuse the
 // same `haw-sandbox`/`kv` IndexedDB with their own namespaced keys without a
 // schema/version bump. The sandbox keys themselves remain module-private.
 export async function idbGet<T>(key: string): Promise<T | undefined> {

@@ -18,9 +18,14 @@ export default function Throbber() {
     // Restore takes precedence: nothing else can run until it clears.
     labels.push('Reconstructing state');
   } else {
-    if (snap.llm.modelDownload) {
-      const verb = snap.llm.modelDownload.fromCache ? 'Loading' : 'Downloading';
-      labels.push(`${verb} ${snap.llm.modelDownload.label} · ${snap.llm.modelDownload.pct}%`);
+    const dl = snap.llm.modelDownload;
+    if (dl) {
+      if (dl.phase === 'init') {
+        labels.push(`Loading ${dl.label} onto GPU`);
+      } else {
+        const verb = dl.fromCache ? 'Loading' : 'Downloading';
+        labels.push(`${verb} ${dl.label} · ${dl.pct}%`);
+      }
     }
     if (isBusy(snap.data.status)) labels.push('Loading data');
     if (isBusy(snap.sql.status)) labels.push('Running SQL');
