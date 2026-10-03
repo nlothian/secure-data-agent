@@ -12,11 +12,12 @@
 // belongs there.
 
 import { callLLM } from './llm';
-import { generate as generateLocal, ensureLoaded } from './localLlm/llmService';
+import { generatePlainTurn } from './localLlm/oneShot';
+import { escapeForToolPrompt } from './localLlm/toolPrompt';
 import { stripCompactedMarker, stripThinking } from './parseAssistantContent';
 import type { ChatMessage } from '../types/chat';
 import { isLocalGemmaEndpoint, type LLMConfig } from '../types/llm';
-import { resolveActiveLocalModelIdOrDefault } from './localLlm/customModels';
+import { resolveActiveLocalModelIdOrDefault } from './localLlm/models';
 import compactionPromptText from '../prompts/compactionPrompt.md?raw';
 
 export interface CompactConversationArgs {
@@ -37,17 +38,14 @@ export async function compactConversation(
 
   if (isLocalGemmaEndpoint(endpoint)) {
     const modelId = resolveActiveLocalModelIdOrDefault(config);
-    await ensureLoaded(modelId);
-    const prompt =
-      compactionPromptText + '\n\n' + userPayload + '\n\nSummary:\n';
-    const result = await generateLocal({
-      prompt,
+    // The transcript may quote structural tokens (tool calls, channels);
+    // defang them so they can't break out of the user turn.
+    return generatePlainTurn({
+      modelId,
+      system: compactionPromptText,
+      user: escapeForToolPrompt(userPayload),
       signal,
-      onToken: () => {
-        // Discarded — the summary is captured via the resolved value.
-      },
     });
-    return result.trim();
   }
 
   return (await callLLM(config, compactionPromptText, userPayload)).trim();

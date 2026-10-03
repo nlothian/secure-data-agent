@@ -122,6 +122,19 @@ describe('thinkingChannelSplitter', () => {
     expect(result.closes).toBe(0);
   });
 
+  it('6a. stray <channel|> is reported as a stray-close event (exact replay)', () => {
+    // The tag must not render, but streamLocalGemma replays the model's
+    // output byte-for-byte into the in-progress turn so the worker can reuse
+    // its KV cache — so the caller has to be told the tag was there.
+    const state = createSplitterState('outside');
+    const events = [...feedSplitter(state, 'a<channel|>b'), ...flushSplitter(state)];
+    expect(events.map((e) => e.kind)).toEqual(['body', 'stray-close', 'body']);
+    // A genuine close (in-thought) is still reported as `close`, never stray.
+    const st2 = createSplitterState('in-thought');
+    const ev2 = feedSplitter(st2, 't<channel|>b');
+    expect(ev2.map((e) => e.kind)).toEqual(['thought', 'close', 'body']);
+  });
+
   it('6b. stray <channel|> split across deltas — held back, then swallowed', () => {
     const state = createSplitterState('outside');
     const ev1 = feedSplitter(state, 'a<chan');

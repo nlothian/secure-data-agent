@@ -9,8 +9,8 @@
  * tool round-trip. The only thing we share with the chat is the endpoint URL,
  * API key, and active model from `LLMConfig`.
  *
- * For the in-browser Gemma provider we drive the singleton `LlmInference`
- * directly (one-shot, no tool prompt) for the same isolation reason.
+ * For the in-browser Gemma provider we run a one-shot, tool-less Gemma turn
+ * (`generatePlainTurn`) for the same isolation reason.
  */
 
 import { callLLM } from './llm';
@@ -76,30 +76,21 @@ async function summariseWithLocalGemma(
   userPrompt: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const { resolveActiveLocalModelIdOrDefault } = await import(
-    './localLlm/customModels'
-  );
-  const { ensureLoaded, generate } = await import('./localLlm/llmService');
+  const { resolveActiveLocalModelIdOrDefault } = await import('./localLlm/models');
+  const { generatePlainTurn } = await import('./localLlm/oneShot');
+  const { escapeForToolPrompt } = await import('./localLlm/toolPrompt');
 
-  // Resolves predefined OR a registered custom model (falling back to the
-  // default predefined id only when unresolvable), so a selected custom
-  // model is used for code summaries instead of being silently ignored.
+  // Same active-model resolution as the chat path, so summaries use the
+  // model the user selected.
   const modelId = resolveActiveLocalModelIdOrDefault(config);
-  await ensureLoaded(modelId);
 
-  // Plain user-turn prompt — deliberately bypasses the tool-aware template
-  // used by `streamLocalGemma` so the model has no tools available and no
-  // shared history to lean on.
-  const prompt =
-    `<start_of_turn>user\n${SYSTEM_PROMPT}\n\n${userPrompt}<end_of_turn>\n` +
-    `<start_of_turn>model\n`;
-
-  const text = await generate({
-    prompt,
+  // Plain system + user turn — no tools available and no shared history to
+  // lean on. The snippet is escaped so literal control tokens in source code
+  // (`<turn|>`, `<|tool_call>`, `<bos>`, …) can't end the user turn early.
+  return generatePlainTurn({
+    modelId,
+    system: SYSTEM_PROMPT,
+    user: escapeForToolPrompt(userPrompt),
     signal,
-    onToken: () => {
-      // Discard streaming tokens — the panel only consumes the final text.
-    },
   });
-  return text.trim();
 }

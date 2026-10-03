@@ -1,10 +1,11 @@
 /**
  * Prompt + parser glue for Gemma 4's native chat template.
  *
- * Mirrors `chat_template.jinja` from google/gemma-4-* (the litert-lm task
- * files are distilled from these checkpoints, so the surface tokens are the
- * same). MediaPipe's LlmInference does not apply a chat template, so we have
- * to emit the exact token sequence the model was trained on.
+ * Mirrors `chat_template.jinja` from google/gemma-4-* (the onnx-community
+ * exports ship the same template and tokens). We render the prompt ourselves
+ * rather than calling the tokenizer's `apply_chat_template`, because the
+ * streaming tool-call parser and thinking-channel splitter below depend on
+ * emitting (and seeing) the exact token sequence the model was trained on.
  *
  * Tokens (each is one tokenizer entry):
  *   <|turn>{role}\n ... <turn|>\n         turn delimiters
@@ -22,18 +23,37 @@ import type { AgentToolSpec } from '../agentTools';
 import { safeParseJson } from '../streamChat';
 import { compactionToolStub } from '../parseAssistantContent';
 
-export const TURN_OPEN = '<|turn>';
-export const TURN_CLOSE = '<turn|>';
-export const TOOL_DECL_OPEN = '<|tool>';
-export const TOOL_DECL_CLOSE = '<tool|>';
-export const TOOL_CALL_OPEN = '<|tool_call>';
-export const TOOL_CALL_CLOSE = '<tool_call|>';
-export const TOOL_RESPONSE_OPEN = '<|tool_response>';
-export const TOOL_RESPONSE_CLOSE = '<tool_response|>';
-export const STRING_DELIM = '<|"|>';
-export const CHANNEL_OPEN = '<|channel>';
-export const CHANNEL_CLOSE = '<channel|>';
-export const EMPTY_THOUGHT = `${CHANNEL_OPEN}thought\n${CHANNEL_CLOSE}`;
+// The control-token constants live in the import-free `gemmaTokens.ts` so the
+// LLM worker can use them without pulling in this module's app dependencies.
+// Re-exported here so existing importers are unaffected.
+export {
+  TURN_OPEN,
+  TURN_CLOSE,
+  TOOL_DECL_OPEN,
+  TOOL_DECL_CLOSE,
+  TOOL_CALL_OPEN,
+  TOOL_CALL_CLOSE,
+  TOOL_RESPONSE_OPEN,
+  TOOL_RESPONSE_CLOSE,
+  STRING_DELIM,
+  CHANNEL_OPEN,
+  CHANNEL_CLOSE,
+  EMPTY_THOUGHT,
+} from './gemmaTokens';
+import {
+  TURN_OPEN,
+  TURN_CLOSE,
+  TOOL_DECL_OPEN,
+  TOOL_DECL_CLOSE,
+  TOOL_CALL_OPEN,
+  TOOL_CALL_CLOSE,
+  TOOL_RESPONSE_OPEN,
+  TOOL_RESPONSE_CLOSE,
+  STRING_DELIM,
+  CHANNEL_OPEN,
+  CHANNEL_CLOSE,
+  EMPTY_THOUGHT,
+} from './gemmaTokens';
 
 export interface InternalMessage {
   role: 'user' | 'assistant' | 'tool';
@@ -62,6 +82,11 @@ const STRUCTURAL_DELIMITERS = [
   TOOL_DECL_CLOSE,
   CHANNEL_OPEN,
   CHANNEL_CLOSE,
+  // Tokenizer control tokens. Not part of the chat-template grammar, but a
+  // literal `<bos>` / `<eos>` in content would otherwise tokenise to the
+  // real control id.
+  '<bos>',
+  '<eos>',
 ] as const;
 
 /**
@@ -286,13 +311,28 @@ export function renderConversationForGemma(
     out += `${TURN_CLOSE}\n`;
   }
 
-  // Past model turns get a bare <|turn>model\n (no thought channel — the
-  // empty-thought marker is for the *generation* prompt only). Tool
-  // responses stay inside the open model turn.
+  // Past model turns (before the last user message) get a bare
+  // <|turn>model\n, matching the template's "bare past turn" rule. The
+  // in-progress model turn — the one after the last user message, which the
+  // model is still continuing across tool calls — is re-rendered exactly as
+  // the model was conditioned on it: with the empty-thought marker when
+  // thinking is off. The official template replays that marker for assistant
+  // messages after the last user turn, and keeping it byte-identical lets the
+  // worker reuse the KV cache across tool iterations (a bare re-render would
+  // diverge at the marker and force a full prefill on every iteration). With
+  // thinking on, the thought content is stripped from history, so the
+  // in-progress turn stays bare and the cache is rebuilt once per turn.
   let modelTurnOpen = false;
   let lastWasToolResponse = false;
+  const lastUserIdx = messages.findLastIndex((m) => m.role === 'user');
+  const openModelTurn = (idx: number): void => {
+    out += `${TURN_OPEN}model\n`;
+    if (idx > lastUserIdx && !thinkingEnabled) out += EMPTY_THOUGHT;
+    modelTurnOpen = true;
+  };
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.role === 'user') {
       if (modelTurnOpen) {
         out += `${TURN_CLOSE}\n`;
@@ -301,17 +341,11 @@ export function renderConversationForGemma(
       out += `${TURN_OPEN}user\n${msg.content}${TURN_CLOSE}\n`;
       lastWasToolResponse = false;
     } else if (msg.role === 'assistant') {
-      if (!modelTurnOpen) {
-        out += `${TURN_OPEN}model\n`;
-        modelTurnOpen = true;
-      }
+      if (!modelTurnOpen) openModelTurn(i);
       out += msg.content;
       lastWasToolResponse = false;
     } else {
-      if (!modelTurnOpen) {
-        out += `${TURN_OPEN}model\n`;
-        modelTurnOpen = true;
-      }
+      if (!modelTurnOpen) openModelTurn(i);
       const name = msg.toolName ?? 'unknown';
       out += `${TOOL_RESPONSE_OPEN}response:${name}{${bodyFromJson(msg.content)}}${TOOL_RESPONSE_CLOSE}`;
       lastWasToolResponse = true;

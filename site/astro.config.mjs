@@ -2,6 +2,7 @@ import { defineConfig } from "astro/config";
 import mdx from "@astrojs/mdx";
 import react from "@astrojs/react";
 import sourcecodePlugin from "./scripts/sourcecode-vite-plugin.mjs";
+import localModelsPlugin from "./scripts/local-models-vite-plugin.mjs";
 
 export default defineConfig({
   integrations: [mdx(), react()],
@@ -18,7 +19,8 @@ export default defineConfig({
     },
   },
   vite: {
-    plugins: [sourcecodePlugin()],
+    // localModelsPlugin is a no-op unless PUBLIC_LOCAL_MODELS=1 (dev/e2e only).
+    plugins: [sourcecodePlugin(), localModelsPlugin()],
     server: {
       cors: true,
     },
@@ -62,7 +64,13 @@ export default defineConfig({
       // and the iframe fetches the package's native ESM tree from
       // `/node_modules/pixi.js/...` directly; the browser dedupes by URL, so
       // the extension singleton is registered exactly once.
-      exclude: ['@duckdb/duckdb-wasm', '@mediapipe/tasks-genai', 'pixi.js'],
+      // @huggingface/transformers resolves ONNX Runtime's .wasm / .jsep.mjs
+      // assets via import.meta.url and dynamic import; esbuild pre-bundling
+      // rewrites those paths and duplicates ORT. It is also only imported
+      // from inside the LLM Web Worker (llm.worker.ts), which Vite's
+      // main-thread dep scan never sees, so excluding it avoids a
+      // mid-session re-optimisation race on first worker spawn.
+      exclude: ['@duckdb/duckdb-wasm', '@huggingface/transformers', 'pixi.js'],
       // apache-arrow is only reached via the dynamic import of ./duckdb, so
       // Vite's static scan misses it. Pre-bundle it explicitly so the dep URL
       // is stable when the agent's tool wrappers eventually fire.

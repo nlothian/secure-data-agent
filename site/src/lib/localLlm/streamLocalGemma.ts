@@ -6,8 +6,9 @@ import { compactConversation } from '../compactConversation';
 import { COMPACTION_HEADER } from '../autoCompaction';
 import * as tokenUsageStore from '../tokenUsageStore';
 import type { ChatMessage } from '../../types/chat';
-import { resolveActiveLocalModelIdOrDefault } from './customModels';
-import { ensureLoaded, generate, sizeInTokens } from './llmService';
+import { resolveActiveLocalModelIdOrDefault } from './models';
+import { ensureLoaded, generate } from './llmService';
+import type { GenerateStats } from './llmWorkerProtocol';
 import {
   formatToolCallToken,
   formatToolResponseToken,
@@ -168,6 +169,9 @@ async function maybeCompactBeforeToolResult(
       signal,
     });
   } catch (compactErr) {
+    // An abort must end the turn (handled by streamLocalGemma's top-level
+    // catch), not fall through to dispatching with an uncompacted history.
+    if (isAbortError(compactErr)) throw compactErr;
     console.warn(
       '[streamLocalGemma] Inline pre-tool-result compaction failed:',
       compactErr,
@@ -200,38 +204,18 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
   };
 
   // Track decode-only time and output tokens across iterations so the UI can
-  // show a tokens/sec figure that excludes tool-dispatch latency. The current
-  // iteration window starts on the first non-empty model delta, not on
-  // synthetic UI transcript text such as tool call/result markers.
+  // show a tokens/sec figure that excludes prefill and tool-dispatch latency.
+  // The worker measures both per generation (`GenerateStats`).
   let totalOutputTokens = 0;
   let totalDecodeMs = 0;
-  let iterDecodeStartedAt: number | null = null;
-  const stampModelDecode = (): void => {
-    if (iterDecodeStartedAt === null) iterDecodeStartedAt = performance.now();
-  };
-  const closeIterDecodeWindow = (): void => {
-    if (iterDecodeStartedAt !== null) {
-      totalDecodeMs += performance.now() - iterDecodeStartedAt;
-      iterDecodeStartedAt = null;
-    }
-  };
 
-  // Token usage is reported once per turn, only after `await generate()` has
-  // resolved. `sizeInTokens` re-enters the same MediaPipe `LlmInference` graph
-  // as `generateResponse`, so calling it while a decode is in flight (e.g.
-  // from inside an `onToken` callback) pushes packets through the
-  // `token_cost_in` stream and desyncs its timestamp counter, surfacing as
-  //   "Packet timestamp mismatch ... token_cost_in"
-  // on the next decode. Calling it between turns is safe.
-  const reportUsage = (promptText: string, outputText: string): void => {
+  const reportUsage = (stats: GenerateStats): void => {
+    totalOutputTokens += stats.outputTokens;
+    totalDecodeMs += stats.decodeMs;
     if (!onUsage) return;
-    const input = sizeInTokens(promptText);
-    const output = sizeInTokens(outputText);
-    if (input === null && output === null) return;
-    totalOutputTokens += output ?? 0;
     const tps =
       totalDecodeMs > 0 ? totalOutputTokens / (totalDecodeMs / 1000) : undefined;
-    onUsage({ input: input ?? 0, output: output ?? 0, tps });
+    onUsage({ input: stats.promptTokens, output: stats.outputTokens, tps });
   };
 
   const modelId = resolveActiveLocalModelIdOrDefault(config);
@@ -270,11 +254,29 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
 
       const prompt = renderConversationForGemma(systemPrompt, conv, tools ?? [], thinkingEnabled);
 
-      // Two parallel buffers: `assistantTurnText` includes thought markers and
-      // thought content for the UI; `assistantTurnHistory` strips them so past
-      // turns re-fed to the model match the template's bare-past-turn rule.
+      // Three parallel buffers:
+      //  - `assistantTurnText`: what the UI renders (thought markers + thoughts
+      //    + body, but never a stray `<channel|>`).
+      //  - `assistantTurnHistory`: thought-free; persists into chat history so
+      //    *past* turns re-fed on later user messages follow the template's
+      //    bare-past-turn rule.
+      //  - `assistantTurnConv`: byte-exact replay of the model's output
+      //    (thought markers, thoughts, stray closes, body). It is pushed into
+      //    `conv` for the rest of this turn: the template replays reasoning for
+      //    messages after the last user turn, and an exact replay is what lets
+      //    the worker reuse its KV cache across tool iterations.
       let assistantTurnText = '';
       let assistantTurnHistory = '';
+      let assistantTurnConv = '';
+      // Body text minus any stray `<channel|>` → UI + persisted history.
+      const emitVisible = (text: string): void => {
+        const visible = text.split(CHANNEL_CLOSE).join('');
+        if (!visible) return;
+        assistantTurnText += visible;
+        assistantTurnHistory += visible;
+        emit(visible);
+        emitHistory(visible);
+      };
       // Body-only buffer for the existing tool-call streaming parser.
       let toolBuffer = '';
       let pendingToolCall: { name: string; argsJson: string } | null = null;
@@ -283,6 +285,12 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       // open `<|channel>thought\n`, so the model resumes inside the thought
       // channel. Subsequent iterations after a tool response do NOT add a
       // fresh open, so they start `outside`.
+      // Per-iteration controller: aborted by the outer signal, or by us once a
+      // complete tool call has been parsed (no point decoding past it).
+      const iterCtrl = new AbortController();
+      const forwardAbort = (): void => iterCtrl.abort();
+      signal?.addEventListener('abort', forwardAbort, { once: true });
+
       const splitter = createSplitterState(
         thinkingEnabled && iter === 0 ? 'in-thought' : 'outside',
       );
@@ -290,6 +298,7 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       // open marker to the UI so the parser sees a complete thinking block.
       if (thinkingEnabled && iter === 0) {
         assistantTurnText += THINKING_OPEN_MARKER;
+        assistantTurnConv += THINKING_OPEN_MARKER;
         emit(THINKING_OPEN_MARKER);
       }
 
@@ -297,28 +306,33 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
         if (pendingToolCall) return;
         if (e.kind === 'open') {
           assistantTurnText += THINKING_OPEN_MARKER;
+          assistantTurnConv += THINKING_OPEN_MARKER;
           emit(THINKING_OPEN_MARKER);
           return;
         }
         if (e.kind === 'close') {
           assistantTurnText += CHANNEL_CLOSE;
+          assistantTurnConv += CHANNEL_CLOSE;
           emit(CHANNEL_CLOSE);
           return;
         }
         if (e.kind === 'thought') {
           assistantTurnText += e.text;
+          assistantTurnConv += e.text;
           emit(e.text);
           return;
         }
-        // body — route through the existing tool-call streaming parser so
-        // partial `<|tool_call>` prefixes stay held back.
-        toolBuffer += e.text;
+        // body (or a stray `<channel|>` the model emitted outside a thought
+        // channel) — route through the tool-call streaming parser so partial
+        // `<|tool_call>` prefixes stay held back. The stray close travels
+        // through the same buffer so it lands at its true position in the
+        // byte-exact `assistantTurnConv` replay; it is stripped from what the
+        // UI and persisted history see (`emitVisible`).
+        toolBuffer += e.kind === 'stray-close' ? CHANNEL_CLOSE : e.text;
         const parsed = parseStreamForToolCall(toolBuffer);
         if (parsed.emitText) {
-          assistantTurnText += parsed.emitText;
-          assistantTurnHistory += parsed.emitText;
-          emit(parsed.emitText);
-          emitHistory(parsed.emitText);
+          assistantTurnConv += parsed.emitText;
+          emitVisible(parsed.emitText);
         }
         toolBuffer = parsed.rest;
         if (parsed.toolCall) {
@@ -327,12 +341,8 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
           // the relevant pane to pending and the throbber will surface
           // "Running Python" / "Running SQL" instead.
           setLlmPreparingToolCall(null);
-          // Don't call `cancelGenerate()` here. Cancelling MediaPipe mid-decode
-          // leaves its CalculatorGraph in a state where the next
-          // `generateResponse` fails with a `token_cost_in` packet-timestamp
-          // mismatch. Subsequent tokens are already discarded by the
-          // `pendingToolCall` short-circuit in `onToken` below, so letting the
-          // decode finish naturally costs only a few extra tokens of compute.
+          // Stop decoding now — anything after the call is discarded anyway.
+          iterCtrl.abort();
         } else {
           setLlmPreparingToolCall(extractPreparingToolCall(toolBuffer));
           const streaming = extractStreamingCode(toolBuffer);
@@ -342,18 +352,25 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
         }
       };
 
-      await generate({
-        prompt,
-        signal,
-        onToken: (delta) => {
-          if (delta) stampModelDecode();
-          if (pendingToolCall) return;
-          for (const e of feedSplitter(splitter, delta)) {
-            handleEvent(e);
-            if (pendingToolCall) break;
-          }
-        },
-      });
+      let iterStats = null as GenerateStats | null;
+      try {
+        await generate({
+          prompt,
+          signal: iterCtrl.signal,
+          onToken: (delta) => {
+            if (pendingToolCall) return;
+            for (const e of feedSplitter(splitter, delta)) {
+              handleEvent(e);
+              if (pendingToolCall) break;
+            }
+          },
+          onStats: (s) => {
+            iterStats = s;
+          },
+        });
+      } finally {
+        signal?.removeEventListener('abort', forwardAbort);
+      }
 
       // Drain the splitter at the end of generation.
       if (!pendingToolCall) {
@@ -367,27 +384,23 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
         // Drain any remaining tool-buffer tail as plain text — when the
         // stream ends without a tool call, holdback chars are just text.
         if (toolBuffer) {
-          assistantTurnText += toolBuffer;
-          assistantTurnHistory += toolBuffer;
-          emit(toolBuffer);
-          emitHistory(toolBuffer);
+          assistantTurnConv += toolBuffer;
+          emitVisible(toolBuffer);
           toolBuffer = '';
         }
-        closeIterDecodeWindow();
-        reportUsage(prompt, assistantTurnText);
+        if (iterStats) reportUsage(iterStats);
         onDone(accumulatedText);
         return;
       }
 
-      closeIterDecodeWindow();
-      reportUsage(prompt, assistantTurnText);
+      if (iterStats) reportUsage(iterStats);
 
       const tc: { name: string; argsJson: string } = pendingToolCall;
       const toolCallToken = formatToolCallToken(tc.name, tc.argsJson);
 
       conv.push({
         role: 'assistant',
-        content: assistantTurnHistory + toolCallToken,
+        content: assistantTurnConv + toolCallToken,
       });
       emitHistory(toolCallToken);
 
@@ -407,10 +420,9 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       const resultStr = clampToolResultSize(tc.name, JSON.stringify(result));
 
       // Pre-emptive compaction: if appending this tool result would push the
-      // next prompt past maxTokens, summarise older conv entries first.
-      // Otherwise the next generate() throws "Input is too long for the
-      // model to process: current_step + input_size was not less than
-      // maxTokens" and the tool result is lost.
+      // next prompt past the context window, summarise older conv entries
+      // first. Otherwise the next generate() rejects with
+      // `ContextTooLongError` and the tool result is lost.
       const newSummary = await maybeCompactBeforeToolResult({
         conv,
         resultStr,

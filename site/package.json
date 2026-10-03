@@ -11,7 +11,8 @@
     "astro": "astro",
     "test": "vitest run",
     "test:e2e": "playwright test --project=chromium",
-    "test:llm_tests": "playwright test --project=llm"
+    "test:llm_tests": "GDA_E2E_LLM=1 playwright test --project=llm",
+    "models:fetch": "node scripts/fetch-models.mjs"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.0.0",
@@ -24,7 +25,7 @@
     "@codemirror/lang-python": "^6.1.6",
     "@codemirror/lang-sql": "^6.8.0",
     "@duckdb/duckdb-wasm": "^1.32.0",
-    "@mediapipe/tasks-genai": "^0.10.27",
+    "@huggingface/transformers": "^4.3.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@uiw/react-codemirror": "^4.23.7",

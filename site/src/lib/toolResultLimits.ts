@@ -1,7 +1,6 @@
 // Caps oversized tool results before they re-enter the LLM prompt and bust
-// the model's maxTokens budget (MediaPipe surfaces this as
-// "Input is too long for the model to process: current_step + input_size
-//  was not less than maxTokens").
+// the model's context window (for local Gemma the runtime rejects the prompt
+// with ContextTooLongError).
 //
 // For diagnostic-shaped results ({ error, stdout, stderr } — e.g. RunPython),
 // an oversized payload is salvaged by truncating those fields head+tail rather

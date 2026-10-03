@@ -5,11 +5,13 @@
  * and we deliberately match only that exact open marker — `<|channel>other\n`
  * etc. is treated as plain body text.
  *
- * In `outside` mode we also recognise a bare `<channel|>` and swallow it
- * silently. The model sometimes emits reasoning + a stray close marker even
- * when the prompt's thought channel was already closed (thinking disabled);
- * the leading prose comes through as plain body, but the tag itself would
- * otherwise leak into the rendered message.
+ * In `outside` mode we also recognise a bare `<channel|>` and report it as a
+ * `stray-close` event instead of body text. The model sometimes emits
+ * reasoning + a stray close marker even when the prompt's thought channel was
+ * already closed (thinking disabled); the leading prose comes through as
+ * plain body, the tag must not leak into the rendered message, but the
+ * caller still needs to know it was there so the model's output can be
+ * replayed byte-for-byte (KV-cache reuse depends on an exact replay).
  *
  * The splitter returns an ordered list of events per feed so the caller can
  * faithfully reconstruct the original sequence (multiple opens/closes within
@@ -36,7 +38,9 @@ export type SplitterEvent =
   | { kind: 'body'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'open' }
-  | { kind: 'close' };
+  | { kind: 'close' }
+  /** A `<channel|>` seen while already outside a thought channel. */
+  | { kind: 'stray-close' };
 
 export function createSplitterState(initialMode: SplitterMode): SplitterState {
   return { mode: initialMode, buffer: '' };
@@ -75,9 +79,10 @@ export function feedSplitter(state: SplitterState, delta: string): SplitterEvent
       }
       if (useClose) {
         // Stray close marker — model emitted `<channel|>` without an open.
-        // Swallow it; preceding text stays as body.
+        // Preceding text stays as body; the tag is reported, not rendered.
         pushText(events, 'body', state.buffer.slice(0, closeIdx));
         state.buffer = state.buffer.slice(closeIdx + THOUGHT_CLOSE.length);
+        events.push({ kind: 'stray-close' });
         continue;
       }
       const holdback = Math.max(THOUGHT_OPEN.length, THOUGHT_CLOSE.length) - 1;

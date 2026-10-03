@@ -56,6 +56,38 @@ describe('renderConversationForGemma — thinkingEnabled flag', () => {
     expect(prompt.endsWith(`${TURN_OPEN}model\n${CHANNEL_OPEN}thought\n`)).toBe(true);
   });
 
+  it('in-progress model turn (after the last user message) replays the empty-thought marker when thinking is off', () => {
+    const messages: InternalMessage[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'do thing' },
+      { role: 'assistant', content: 'calling tool' },
+      { role: 'tool', toolName: 'foo', content: '{}' },
+    ];
+    const prompt = renderConversationForGemma('', messages, [], false);
+    // Past turn stays bare…
+    expect(prompt).toContain(`${TURN_OPEN}model\na1${TURN_CLOSE}\n`);
+    // …but the turn the model is still continuing is rendered exactly as it
+    // was conditioned on it, so the next prompt is a strict token-prefix
+    // extension of the previous one (KV-cache reuse in the worker).
+    expect(prompt).toContain(
+      `${TURN_OPEN}model\n${CHANNEL_OPEN}thought\n${CHANNEL_CLOSE}calling tool`,
+    );
+    const first = renderConversationForGemma('', messages.slice(0, 3), [], false);
+    expect(prompt.startsWith(first)).toBe(true);
+  });
+
+  it('in-progress model turn stays bare when thinking is on (thoughts are not replayed)', () => {
+    const messages: InternalMessage[] = [
+      { role: 'user', content: 'do thing' },
+      { role: 'assistant', content: 'calling tool' },
+      { role: 'tool', toolName: 'foo', content: '{}' },
+    ];
+    const prompt = renderConversationForGemma('', messages, [], true);
+    expect(prompt).toContain(`${TURN_OPEN}model\ncalling tool`);
+    expect(prompt).not.toContain(CHANNEL_CLOSE);
+  });
+
   it('tool-response continuation is unaffected by flag', () => {
     const messages: InternalMessage[] = [
       { role: 'user', content: 'do thing' },
@@ -104,6 +136,14 @@ describe('escapeForToolPrompt — structural delimiter defanging', () => {
     expect(escaped).not.toContain(CHANNEL_CLOSE);
     expect(escaped).not.toContain('<|tool_response>');
     expect(escaped).not.toContain(TOOL_RESPONSE_CLOSE);
+  });
+
+  it('escapes literal <bos> / <eos> control tokens', () => {
+    const evil = 'x = "<bos>"; y = "<eos>"';
+    const escaped = escapeForToolPrompt(evil);
+    expect(escaped).not.toContain('<bos>');
+    expect(escaped).not.toContain('<eos>');
+    expect(escaped.replace(/\u200b/g, '')).toBe(evil);
   });
 
   it('handles overlapping/repeated delimiter substrings', () => {

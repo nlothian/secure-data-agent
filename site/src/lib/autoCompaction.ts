@@ -121,17 +121,19 @@ export interface RunCompactionDeps {
    * inserted. Return `null` if no client-side estimate is available — the
    * gauge will reset and repopulate from the next response's usage event.
    */
-  estimatePostCompactionUsage?: (messages: ChatMessage[]) => TokenUsage | null;
+  estimatePostCompactionUsage?: (
+    messages: ChatMessage[],
+  ) => TokenUsage | null | Promise<TokenUsage | null>;
 }
 
 export async function runCompaction(deps: RunCompactionDeps): Promise<void> {
   const { config, toCompact, recent, replaceMessages, flush, setHighlightId, scrollToTop, signal } = deps;
   executionPanelStore.setLlmCompacting(true);
-  // Yield to the browser for a paint before kicking off the model. Local
-  // Gemma's prefill can block the main thread for tens of seconds on long
-  // prompts; without this yield, React never gets a chance to render the
-  // "Compacting" indicator, the disabled button state, or the throbber
-  // label until after the freeze ends.
+  // Yield to the browser for a paint before kicking off the model so React
+  // renders the "Compacting" indicator, the disabled button state, and the
+  // throbber label first. Local Gemma inference now runs in a worker, so the
+  // main thread no longer freezes during prefill, but the yield is cheap and
+  // keeps the indicator from flickering in late.
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
@@ -149,7 +151,7 @@ export async function runCompaction(deps: RunCompactionDeps): Promise<void> {
     replaceMessages(nextMessages);
     flush();
     tokenUsageStore.setTokenUsage(
-      deps.estimatePostCompactionUsage?.(nextMessages) ?? null,
+      (await deps.estimatePostCompactionUsage?.(nextMessages)) ?? null,
     );
     scrollToTop();
     setHighlightId(marker.id);
@@ -170,7 +172,9 @@ export interface MaybeAutoCompactArgs {
   setHighlightId: (id: string | null) => void;
   scrollToTop: () => void;
   signal: AbortSignal;
-  estimatePostCompactionUsage?: (messages: ChatMessage[]) => TokenUsage | null;
+  estimatePostCompactionUsage?: (
+    messages: ChatMessage[],
+  ) => TokenUsage | null | Promise<TokenUsage | null>;
 }
 
 /**

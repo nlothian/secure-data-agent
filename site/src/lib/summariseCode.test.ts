@@ -114,7 +114,7 @@ describe('summariseCode (cloud endpoints)', () => {
     vi.doMock('./localLlm/llmService', () => ({
       ensureLoaded: vi.fn().mockResolvedValue(undefined),
       generate: vi.fn().mockResolvedValue('Gemma summary.'),
-      sizeInTokens: () => null,
+      sizeInTokens: async () => null,
       cancel: () => {},
     }));
 
@@ -136,16 +136,20 @@ describe('summariseCode (cloud endpoints)', () => {
     vi.doUnmock('./localLlm/llmService');
   });
 
-  it('summarises with the active custom model id (not a predefined fallback)', async () => {
+  it('summarises with the resolved active model id and a Gemma 4 turn prompt', async () => {
     const ensureLoaded = vi.fn().mockResolvedValue(undefined);
+    const generate = vi
+      .fn()
+      .mockResolvedValue('<|channel>thought\nhmm<channel|>  Model summary.  ');
     vi.doMock('./localLlm/llmService', () => ({
       ensureLoaded,
-      generate: vi.fn().mockResolvedValue('Custom summary.'),
-      sizeInTokens: () => null,
+      generate,
+      sizeInTokens: async () => null,
       cancel: () => {},
     }));
-    vi.doMock('./localLlm/customModels', () => ({
-      resolveActiveLocalModelIdOrDefault: () => 'custom:my-model',
+    vi.doMock('./localLlm/models', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('./localLlm/models')>()),
+      resolveActiveLocalModelIdOrDefault: () => 'gemma-4-e4b',
     }));
 
     vi.resetModules();
@@ -154,16 +158,27 @@ describe('summariseCode (cloud endpoints)', () => {
       activeEndpoint: LOCAL_GEMMA_ENDPOINT,
       customEndpoints: [],
       apiKeys: {},
-      models: { [LOCAL_GEMMA_ENDPOINT]: 'custom:my-model' },
+      models: { [LOCAL_GEMMA_ENDPOINT]: 'gemma-4-e4b' },
       thinkingEnabled: {},
     };
     const result = await fresh.summariseCode('python', 'print(1)', config);
-    expect(result).toBe('Custom summary.');
-    // The bug fix: a selected custom model must drive the summary instead of
-    // being silently replaced by a predefined default.
-    expect(ensureLoaded).toHaveBeenCalledWith('custom:my-model');
+    // Thought channel stripped, body trimmed.
+    expect(result).toBe('Model summary.');
+    // The selected model drives the summary instead of a hardcoded default.
+    expect(ensureLoaded).toHaveBeenCalledWith('gemma-4-e4b');
+
+    // Proper Gemma 4 turn format: system turn, user turn, open model turn
+    // with the empty-thought marker; no Gemma 2 `<start_of_turn>` and no
+    // tool declarations.
+    const { prompt } = generate.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toMatch(/^<\|turn>system\nYou explain short code snippets/);
+    expect(prompt).toContain('<turn|>\n<|turn>user\nSummarise this Python code');
+    expect(prompt).toContain('print(1)');
+    expect(prompt.endsWith('<|turn>model\n<|channel>thought\n<channel|>')).toBe(true);
+    expect(prompt).not.toContain('<start_of_turn>');
+    expect(prompt).not.toContain('<|tool>');
 
     vi.doUnmock('./localLlm/llmService');
-    vi.doUnmock('./localLlm/customModels');
+    vi.doUnmock('./localLlm/models');
   });
 });
