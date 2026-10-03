@@ -22,31 +22,55 @@ app runs entirely in the browser. Treat all React components as client-only:
 - Browser-only APIs (`window`, `document`, `localStorage`, etc.) can be used
   directly inside React components without `typeof window` guards.
 
-## Loading the local Gemma model for testing
+## Local model files for dev/e2e
 
-The repo's `models/` directory is gitignored and may contain a local
-`.task` file (e.g. `gemma-4-E4B-it-web.task`) you can load instead of
-downloading one of the predefined Gemma weights from CDN. This is the
-fastest way to exercise an end-to-end LLM run from a fresh browser
-session.
+The repo-root `models/` directory is gitignored. It can hold the Gemma 4
+ONNX files so the dev server serves them locally instead of the app
+downloading them from the Hugging Face Hub. Layout (E4B is the same under
+`gemma-4-E4B-it-ONNX/`, and its decoder adds a second `_data_1` shard):
 
-To load it in Chrome (manual or via chrome-devtools MCP):
+```
+models/onnx-community/gemma-4-E2B-it-ONNX/
+  config.json
+  generation_config.json
+  tokenizer.json
+  tokenizer_config.json
+  chat_template.jinja
+  onnx/embed_tokens_q4f16.onnx
+  onnx/embed_tokens_q4f16.onnx_data
+  onnx/decoder_model_merged_q4f16.onnx
+  onnx/decoder_model_merged_q4f16.onnx_data
+  onnx/decoder_model_merged_q4f16.onnx_data_1   (E4B only)
+```
 
-1. `cd site && npm run dev` — Astro picks the next free port; check the
-   "Local" line in stdout for the URL (typically `http://localhost:4321`
-   or `:4322`).
-2. Open the page and click the chevron next to **Choose model** in the
-   chat sidebar to open the model menu.
-3. Click **Advanced** → **Choose .task file…** and pick
-   `models/gemma-4-E4B-it-web.task` from the repo root. The file is
-   read directly from disk via `File.stream()` and skips the OPFS cache
-   entirely (`site/src/lib/localLlm/customModels.ts`).
-4. Wait for the "Loading … · 100%" status to disappear; the chat
-   textarea becomes enabled when the model is ready.
+The expected files and byte sizes are listed in
+`site/src/lib/localLlm/modelFiles.json`.
 
-Custom-model registrations live in memory only — the file picker has to
-be used again after every page reload. Predefined Gemma URLs are cached
-in OPFS, so subsequent loads of those are near-instant.
+1. Populate it with `cd site && npm run models:fetch -- e2b` (or `e4b` /
+   `all`), or the equivalent Hugging Face CLI command:
+
+   ```sh
+   hf download onnx-community/gemma-4-E2B-it-ONNX \
+     --include "*.json" "chat_template.jinja" \
+       "onnx/embed_tokens_q4f16.onnx*" "onnx/decoder_model_merged_q4f16.onnx*" \
+     --local-dir models/onnx-community/gemma-4-E2B-it-ONNX
+   ```
+
+2. Run `cd site && PUBLIC_LOCAL_MODELS=1 npm run dev`. The files are served
+   at `/models/` by `scripts/local-models-vite-plugin.mjs`. In this mode
+   transformers.js runs with `allowRemoteModels=false`, so a missing file
+   fails loudly instead of falling back to the Hub, and the browser Cache
+   API is bypassed. Astro picks the next free port; check the "Local" line
+   in stdout for the URL.
+3. Click the chevron next to the model label in the chat sidebar and pick
+   the model. There is no download-size dialog in local mode.
+4. Wait for the Throbber's "Loading … · N%" / "Loading … onto GPU" status
+   to disappear. The chat textarea becomes enabled when the model is ready.
+
+`npm run test:llm_tests` starts its own dev server on :4322 with
+`PUBLIC_LOCAL_MODELS=1` (it never reuses an existing server). It skips
+unless every required file for the chosen model is present with the right
+size. It defaults to E4B; set `GDA_E2E_MODEL=gemma-4-e2b` to use E2B.
 
 To exercise a specific tour stage without walking the whole flow, start
 a one-stage tour via the controller in DevTools:

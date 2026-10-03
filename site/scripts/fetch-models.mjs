@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+/**
+ * Populate the gitignored repo-root `models/` folder with the text-only q4f16
+ * Gemma 4 ONNX files, laid out exactly as transformers.js expects under
+ * `/models/<hfRepoId>/…` when `PUBLIC_LOCAL_MODELS=1`.
+ *
+ *   npm run models:fetch -- e2b      # ≈ 3.1 GB
+ *   npm run models:fetch -- e4b      # ≈ 4.9 GB
+ *   npm run models:fetch -- all
+ *
+ * Reads the same manifest the app uses (`src/lib/localLlm/modelFiles.json`),
+ * streams each file to `<path>.part` then renames, skips files whose on-disk
+ * size already matches, and sends `Authorization: Bearer $HF_TOKEN` if set.
+ * Node ≥ 18 (global fetch). Equivalent `hf download` command is in CLAUDE.md.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..', '..');
+const modelsRoot = path.resolve(repoRoot, 'models');
+const manifestPath = path.resolve(
+  __dirname,
+  '..',
+  'src',
+  'lib',
+  'localLlm',
+  'modelFiles.json',
+);
+
+const ALIASES = {
+  e2b: 'onnx-community/gemma-4-E2B-it-ONNX',
+  e4b: 'onnx-community/gemma-4-E4B-it-ONNX',
+};
+
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+function usage() {
+  console.error('usage: npm run models:fetch -- <e2b|e4b|all>');
+  process.exit(2);
+}
+
+const arg = (process.argv[2] ?? '').toLowerCase();
+let repos;
+if (arg === 'all') repos = Object.values(ALIASES);
+else if (ALIASES[arg]) repos = [ALIASES[arg]];
+else usage();
+
+function fmtGB(n) {
+  return `${(n / 1e9).toFixed(2)} GB`;
+}
+
+async function fetchFile(repo, file) {
+  const dest = path.join(modelsRoot, repo, file.path);
+  const part = dest + '.part';
+  if (fs.existsSync(dest) && fs.statSync(dest).size === file.bytes) {
+    console.log(`  ✓ ${file.path} (cached)`);
+    return;
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const url = `https://huggingface.co/${repo}/resolve/main/${file.path}`;
+  const headers = {};
+  if (process.env.HF_TOKEN) headers.Authorization = `Bearer ${process.env.HF_TOKEN}`;
+  const res = await fetch(url, { headers });
+  if (!res.ok || !res.body) {
+    throw new Error(`${url}: ${res.status} ${res.statusText}`);
+  }
+  const total = Number(res.headers.get('content-length') ?? file.bytes);
+  let read = 0;
+  let lastPct = -1;
+  const progress = new TransformStream({
+    transform(chunk, controller) {
+      read += chunk.byteLength;
+      const pct = Math.floor((read / total) * 100);
+      if (pct !== lastPct && (pct % 5 === 0 || pct === 100)) {
+        lastPct = pct;
+        process.stdout.write(`\r  ↓ ${file.path} ${pct}% of ${fmtGB(total)}`);
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  await pipeline(
+    Readable.fromWeb(res.body.pipeThrough(progress)),
+    fs.createWriteStream(part),
+  );
+  process.stdout.write('\n');
+  const size = fs.statSync(part).size;
+  if (size !== file.bytes) {
+    // Never promote a truncated / mismatched download: the e2e gate and the
+    // app's cache check both key on exact sizes.
+    fs.unlinkSync(part);
+    throw new Error(
+      `${file.path}: expected ${file.bytes} bytes, got ${size} — ` +
+        `retry, or update modelFiles.json if the upstream export changed`,
+    );
+  }
+  fs.renameSync(part, dest);
+}
+
+for (const repo of repos) {
+  const m = manifest[repo];
+  if (!m) {
+    console.error(`no manifest entry for ${repo}`);
+    process.exit(1);
+  }
+  const files = [...m.required, ...m.optional];
+  const total = files.reduce((n, f) => n + f.bytes, 0);
+  console.log(`${repo} → ${path.join(modelsRoot, repo)} (${fmtGB(total)})`);
+  for (const f of files) {
+    await fetchFile(repo, f);
+  }
+}
+console.log('done');
