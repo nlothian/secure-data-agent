@@ -88,14 +88,15 @@ export function ZeosTrustIndicator({
   const z = useZeos();
   const open = z.integrity !== null;
   const masking = open ? z.maskToolChoice : (configuredMask ?? false);
-  const mode = `${open ? z.gateMode : configuredMode}${masking ? '+mask' : ''}`;
+  const gateMode = open ? z.gateMode : configuredMode;
+  const mode = `${gateMode}${masking ? '+mask' : ''}`;
   let label: string;
   let state: 'trusted' | 'floor' | 'demoted' | 'starting' | 'error' | 'idle';
   let title: string;
   if (z.status === 'error') {
     state = 'error';
     label = 'ZEOS error';
-    title = z.error ?? 'The ZEOS kernel failed to start.';
+    title = z.error ?? 'The ZEOS kernel stopped.';
   } else if (z.status === 'starting') {
     state = 'starting';
     label = 'ZEOS starting';
@@ -116,7 +117,7 @@ export function ZeosTrustIndicator({
     state = 'trusted';
     label = `${mode}: trusted`;
     title =
-      mode === 'attention'
+      gateMode === 'attention'
         ? 'Integrity 2: the model has not measurably attended untrusted content.'
         : 'Integrity 2: the model has only acted on your own messages.';
   } else {

@@ -138,19 +138,25 @@ which made Gemma generation ~2.5x slower, so `src/workers/llm.worker.ts` pins
 ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
 314 worker, separate from the app's Pyodide 0.29 RunPython worker.
 
-- `cd site && npm run zeos:sync` (env `ZEOS_REPO`, default
-  `/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`)
-  builds the `zeos` and `zeos-coop-count-web` wheels with `uv`, and copies
-  them plus the case directories into `site/public/zeos/` with a
-  `manifest.json`. `public/zeos/` is **generated and gitignored**; re-run the
-  sync after changing ZEOS.
+- `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds the `zeos`
+  and `zeos-coop-count-web` wheels with `uv`, and copies them plus the case
+  directories into `site/public/zeos/` with a `manifest.json` (wheel paths
+  and sha256, cases, and the ZEOS remote, branch, commit and `dirty`; no
+  local paths, since it is served). `ZEOS_REPO` is required; there is no
+  default checkout. `public/zeos/` is **generated and gitignored**; re-run the
+  sync after changing ZEOS. The kernel worker checks each wheel's sha256
+  against the manifest before installing it (from Pyodide's FS, micropip
+  `emfs:`). Pyodide itself loads from jsDelivr at a pinned version without
+  SRI (`loadPyodide` fetches its own files); its packages are checked
+  against Pyodide's lock file.
 - Sync from the ZEOS checkout whose commit the site should run. The
   integrated branch (`feat/zeos-integrate`: OPT chat, masked tool choice,
   exact trusted results, spoof-anywhere) lives in the worktree
   `/Users/nlothian/dev/github/metacognitionai/zeos-integrate`, so until it is
-  merged into the default checkout run
+  merged into the main checkout
+  (`/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`) run
   `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate npm run zeos:sync`.
-  The default checkout may hold someone else's uncommitted edits, which the
+  The main checkout may hold someone else's uncommitted edits, which the
   sync would build in (it records `dirty: true`).
 - The same script vendors ZEOS's JS (`frames.js`, `model_channel.js`,
   `stub_worker.js`, `opt_zeos_worker.js`, `transformers_worker.js`) into
@@ -183,8 +189,30 @@ the app wrote it. The name must match exactly and case-sensitively
 too (`ZEOS_TRUSTED_RESULTS`); it is the only place that policy lives. `RunSQL` is a read only when its SQL is inline
 (`sql`) and read-only, so this model gets an inline-`sql` RunSQL spec. When the
 kernel refuses an effect, the chat shows an approval card. RunSubAgent and
-compaction are off for this model. Side tasks such as code summaries use
-`qwen3.5-4b`.
+compaction are off for this model. Side tasks (code summaries, the
+Explainer's conversation, via `sideTaskConfig` / `transformersModelIdFor`)
+use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
+one run holds the main chat.
+
+- **Engine lifecycle** (`src/lib/localLlm/engineLifecycle.ts`). Switching
+  away from this model calls `disposeZeos()`, which terminates the kernel
+  worker and the model thread (frees ~2.8 GB of GPU memory). Switching to it
+  unloads the transformers.js worker unless it holds `qwen3.5-4b`, and then
+  unloads that whenever it has been idle for 60 s
+  (`SIDE_TASK_IDLE_UNLOAD_MS`): the two 4B models share the GPU only while a
+  side task runs, at the cost of a ~4 s reload for a side task after a quiet
+  minute. The ZEOS export cannot serve side tasks itself: it is a different
+  graph, and a second conversation on its kernel would close and re-prefill
+  the chat's run. The model cannot be switched while the chat or an
+  Explainer reply streams (the picker is disabled with the reason).
+- **Crashes and Stop.** A kernel worker or model-thread crash, a model call
+  past `ZEOS_MODEL_CALL_TIMEOUT_MS` (180 s, ~5x the first-turn prefill), or
+  Pyodide's fatal error disposes the kernel: the turn in flight ends with
+  the error, the trust indicator reads "ZEOS error" with the reason, and the
+  next message starts a fresh engine and replays the history. Stop rejects
+  the pending kernel call at once; if the kernel has not finished it within
+  `ZEOS_ABORT_WATCHDOG_MS` (10 s) the engine is restarted, and a message sent
+  meanwhile waits for that.
 
 - **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
   mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --

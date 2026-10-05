@@ -64,6 +64,17 @@ async function requireWebGpu(): Promise<void> {
   }
 }
 
+/**
+ * A rejection nothing handles (the channel's reply chain, say) leaves the
+ * kernel waiting on a reply that will never come. Report it as a failure:
+ * after ready, the page treats `{ready: false}` as a crash and disposes the
+ * kernel (zeosHost `watchModelThread`) instead of waiting for the timeout.
+ */
+self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+  const reason = event.reason as Error | undefined;
+  self.postMessage({ ready: false, error: `unhandled rejection: ${String(reason?.stack ?? reason)}` });
+});
+
 /** Minimum spacing between forwarded download progress messages. */
 const PROGRESS_EVERY_MS = 100;
 
@@ -85,7 +96,7 @@ self.onmessage = async (event: MessageEvent) => {
     const base = new URL(modelUrl, self.location.href);
 
     let sizes: Record<string, FileInfo> = {};
-    let meta: { decoder?: { file: string } } | null = null;
+    let meta: { decoder?: { file: string; externalData?: string[] } } | null = null;
     let metaBytes: Uint8Array | null = null;
     let bytesBefore = 0;
     let lastPost = 0;
@@ -98,6 +109,12 @@ self.onmessage = async (event: MessageEvent) => {
       for (const b of seen.values()) sum += b;
       return sum;
     };
+    // What has been read, by hash where the export gives one: OptZeosWorker
+    // reads a file whose hash it has already read (the decoder's tied second
+    // shard) from memory instead.
+    const readKeys = new Set<string>();
+    const keyOf = (name: string): string => sizes[name]?.sha256 ?? name;
+    let sessionPosted = false;
     const read = async (name: string): Promise<Uint8Array> => {
       if (name === 'meta.json' && metaBytes !== null) return metaBytes;
       const total = uniqueTotal();
@@ -116,9 +133,17 @@ self.onmessage = async (event: MessageEvent) => {
       } else {
         bytesBefore += bytes.byteLength;
       }
-      if (meta && name === meta.decoder?.file) {
-        // The graph is the last file `load` reads; ORT builds the session next.
-        self.postMessage({ progress: { phase: 'session', bytes: bytesBefore, bytes_total: uniqueTotal() } });
+      readKeys.add(keyOf(name));
+      // ORT builds the decoder session once its graph and every data shard
+      // are in. The graph file is read before its ~2.4 GB of data, so
+      // 'session' waits for the shards too (it used to follow the graph).
+      const decoder = meta?.decoder;
+      if (!sessionPosted && decoder) {
+        const files = [decoder.file, ...(decoder.externalData ?? [])];
+        if (files.every((f) => readKeys.has(keyOf(f)))) {
+          sessionPosted = true;
+          self.postMessage({ progress: { phase: 'session', bytes: bytesBefore, bytes_total: uniqueTotal() } });
+        }
       }
       return bytes;
     };
