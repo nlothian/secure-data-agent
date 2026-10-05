@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/stub_worker.js
-// at 6b78fd4b186e8f75802d8db27174ade24d15b5e3 by site/scripts/zeos-sync.mjs.
+// at b44f668d23ba3dfbc890559d2e2dca74bd403790 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -172,6 +172,12 @@
       const allowed = opts.allowedTokens;
       if (allowed !== null && allowed.length !== this.vocab.length) {
         throw new Error(`allowedTokens has ${allowed.length} entries for ${this.vocab.length} ids`);
+      }
+      // A tape has one choice per step, so there is nothing to sample; the options are
+      // checked so a caller that sends malformed ones finds out here too.
+      const sample = opts.sample ?? null;
+      if (sample !== null && !(sample.temperature > 0 && sample.topK >= 1 && sample.u >= 0 && sample.u < 1)) {
+        throw new RangeError("sample needs temperature > 0, topK >= 1 and 0 <= u < 1");
       }
 
       if (ctx.pending.length === 0) {
