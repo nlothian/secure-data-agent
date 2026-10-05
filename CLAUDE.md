@@ -128,6 +128,9 @@ true, which the ZEOS kernel needs for `SharedArrayBuffer` + `Atomics.wait`.
 Hub's CDN redirects, jsDelivr (Pyodide, DuckDB-wasm) and remote CSV URLs
 working without CORP headers; cross-origin no-cors loads just go without
 cookies. Any new cross-origin iframe or popup must cope with this.
+Isolation also turns on ONNX Runtime's multi-threaded wasm by default,
+which made Gemma generation ~2.5x slower, so `src/workers/llm.worker.ts` pins
+`env.backends.onnx.wasm.numThreads = 1` (the pre-isolation behaviour).
 
 ## ZEOS kernel (browser)
 

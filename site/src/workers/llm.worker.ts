@@ -68,6 +68,11 @@ import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url';
 // enough.
 if (env.backends.onnx.wasm) {
   env.backends.onnx.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
+  // Single-threaded wasm, as before the site became cross-origin isolated
+  // (COOP/COEP, for the ZEOS kernel). Without isolation ORT falls back to one
+  // thread; with it ORT defaults to several pthreads, which made Gemma E4B
+  // WebGPU generation ~2.5x slower in realModelSql.spec.ts.
+  env.backends.onnx.wasm.numThreads = 1;
 }
 
 /** Minimum spacing between forwarded per-file `progress` events. */
