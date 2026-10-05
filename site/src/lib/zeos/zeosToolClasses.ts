@@ -251,8 +251,9 @@ const RUN_SQL_ZEOS_NOTE =
   'With this model, pass the query inline as `sql` (one statement). A ' +
   'read-only query (SELECT, WITH, DESCRIBE, SHOW, EXPLAIN, SUMMARIZE, a ' +
   'reporting PRAGMA) given only as `sql` runs straight away; anything else, ' +
-  'or a query given by `path` or with `register_as`, waits for the user to ' +
-  'approve it once you have read tool output. ';
+  'or a query given by `path` or with `register_as`, or one that reads a file ' +
+  'or URL itself (read_csv, FROM \'x.csv\'), waits for the user to approve it ' +
+  'once you have read tool output. Query the loaded tables by name. ';
 
 /**
  * The agent's tool specs as this model sees them: RunSubAgent removed, and
