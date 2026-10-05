@@ -70,4 +70,23 @@ describe('zeosPrompt', () => {
     );
     expect(await dispatchForZeos('ListInputs', {}, dispatch)).toEqual({ ok: true });
   });
+
+  it('runs a read-only RunSQL with extension autoloading off, and nothing else', async () => {
+    const guarded: string[] = [];
+    const guard = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      guarded.push('in');
+      const r = await fn();
+      guarded.push('out');
+      return r;
+    };
+    const dispatch = async (name: string) => name;
+    expect(await dispatchForZeos('RunSQL', { sql: 'SELECT 1' }, dispatch, guard)).toBe('RunSQL');
+    expect(guarded).toEqual(['in', 'out']);
+    guarded.length = 0;
+    // Effects (approved by the user) and other tools run as they are.
+    await dispatchForZeos('RunSQL', { sql: 'CREATE TABLE t AS SELECT 1' }, dispatch, guard);
+    await dispatchForZeos('RunSQL', { path: '/scratchpad/q.sql' }, dispatch, guard);
+    await dispatchForZeos('ListInputs', {}, dispatch, guard);
+    expect(guarded).toEqual([]);
+  });
 });

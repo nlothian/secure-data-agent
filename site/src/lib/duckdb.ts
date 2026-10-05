@@ -256,6 +256,33 @@ export function getDuckDB(): Promise<DuckDBHandle> {
 }
 
 /**
+ * Run `fn` (DuckDB queries) with extension autoloading and autoinstalling
+ * off, then put both settings back. ZEOS Qwen 4B runs a read-only RunSQL with
+ * no approval, so it must not fetch anything: an unknown function or file
+ * type would otherwise make DuckDB download an extension. The read-only
+ * classifier already refuses the known ways in (zeosToolClasses.ts); this is
+ * the second layer. If the settings cannot be changed, it throws rather than
+ * run the query unguarded.
+ */
+export async function withoutExtensionAutoload<T>(fn: () => Promise<T>): Promise<T> {
+  const { conn } = await getDuckDB();
+  const before = (
+    await conn.query(
+      "SELECT current_setting('autoload_known_extensions')::BOOLEAN AS autoload, " +
+        "current_setting('autoinstall_known_extensions')::BOOLEAN AS autoinstall",
+    )
+  ).get(0)?.toJSON() as { autoload: boolean; autoinstall: boolean } | undefined;
+  await conn.query('SET autoload_known_extensions = false');
+  await conn.query('SET autoinstall_known_extensions = false');
+  try {
+    return await fn();
+  } finally {
+    await conn.query(`SET autoload_known_extensions = ${before?.autoload === false ? 'false' : 'true'}`);
+    await conn.query(`SET autoinstall_known_extensions = ${before?.autoinstall === false ? 'false' : 'true'}`);
+  }
+}
+
+/**
  * Truncate an LLM-visible cell. Long strings get suffixed with the original
  * length so the model knows real data was elided; non-strings pass through
  * (`normalizeCell` already converts BigInts to strings before this runs).

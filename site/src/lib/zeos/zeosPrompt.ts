@@ -18,6 +18,7 @@ import { buildAgentSystemPrompt, type AgentPromptFeatures, type AgentPromptOptio
 import runSqlMd from '../../prompts/agent/runSql.md?raw';
 import zeosRunSqlMd from '../../prompts/zeos/runSql.md?raw';
 import zeosSqlSkillMd from '../../prompts/zeos/SqlSkill.md?raw';
+import { classifyToolCall } from './zeosToolClasses';
 
 const CALL_SKILL_SHORTHAND = /CallSkill\('([A-Za-z0-9_-]+)'\)/g;
 
@@ -64,16 +65,29 @@ export function zeosSystemPrompt(system: string, features: AgentPromptFeatures):
   return spellOutCallSkill(system);
 }
 
+/** Run DuckDB work with extension autoloading off (`withoutExtensionAutoload`). */
+export type ReadSqlGuard = <T>(fn: () => Promise<T>) => Promise<T>;
+
+const guardWithDuckDb: ReadSqlGuard = async (fn) =>
+  (await import('../duckdb')).withoutExtensionAutoload(fn);
+
 /**
  * Run a tool call for this model: `CallSkill({"skill":"sql"})` returns the
  * inline-`sql` card, and every skill card has its `CallSkill('x')` spelled
- * out. Anything else goes to `dispatch` unchanged.
+ * out. A RunSQL the classifier calls a read (it ran with no approval) runs
+ * under `guardRead`, DuckDB with extension autoloading off. Anything else
+ * goes to `dispatch` unchanged.
  */
 export async function dispatchForZeos(
   name: string,
   args: unknown,
   dispatch: (name: string, args: unknown) => Promise<unknown>,
+  guardRead: ReadSqlGuard = guardWithDuckDb,
 ): Promise<unknown> {
+  if (name === 'RunSQL') {
+    const fields = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
+    if (classifyToolCall(name, fields) === 'read') return guardRead(() => dispatch(name, args));
+  }
   if (name !== 'CallSkill') return dispatch(name, args);
   if ((args as { skill?: unknown } | null)?.skill === 'sql') return spellOutCallSkill(zeosSqlSkillMd.trim());
   const result = await dispatch(name, args);
