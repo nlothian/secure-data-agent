@@ -116,3 +116,40 @@ const s = await import('/src/lib/tour/stages/index.ts');
 const stage = s.DEFAULT_TOUR.stages.find((x) => x.id === '<stage-id>');
 c.startTour({ id: 'jump', stages: [stage] });
 ```
+
+## Cross-origin isolation (COOP/COEP)
+
+Every page is served with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`: `server.headers` in
+`site/astro.config.mjs` for `astro dev` / `astro preview`, and `/*` in
+`site/public/_headers` for production. That makes `crossOriginIsolated`
+true, which the ZEOS kernel needs for `SharedArrayBuffer` + `Atomics.wait`.
+`credentialless` (not `require-corp`) keeps Google Fonts, the Hugging Face
+Hub's CDN redirects, jsDelivr (Pyodide, DuckDB-wasm) and remote CSV URLs
+working without CORP headers; cross-origin no-cors loads just go without
+cookies. Any new cross-origin iframe or popup must cope with this.
+
+## ZEOS kernel (browser)
+
+ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
+314 worker, separate from the app's Pyodide 0.29 RunPython worker.
+
+- `cd site && npm run zeos:sync` (env `ZEOS_REPO`, default
+  `/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`)
+  builds the `zeos` and `zeos-coop-count-web` wheels with `uv`, and copies
+  them plus the case directories into `site/public/zeos/` with a
+  `manifest.json`. `public/zeos/` is **generated and gitignored**; re-run the
+  sync after changing ZEOS.
+- The same script vendors ZEOS's JS (`frames.js`, `model_channel.js`,
+  `stub_worker.js`, and `opt_zeos_worker.js` once it exists) into
+  `site/src/lib/zeos/vendor/`, which **is committed** (`SOURCE.json` records
+  the ZEOS commit). Do not edit vendored `.js`
+  files; the `.d.ts` files there are hand-written.
+- `src/workers/zeosKernel.worker.ts` is the kernel worker; its generic RPC
+  (`boot`, `call`, `callMethod`, `getAttr`, `exec`, `release`,
+  `attachModel`) is glued to Python by `src/lib/zeos/zeos_rpc.py`.
+  `src/lib/zeos/zeosHost.ts` (`startZeosKernel`, `startZeos`,
+  `kernel.attachModel`) starts it and the model thread on the page thread.
+- `e2e/zeosKernel.spec.ts` (in `npm run test:e2e`) boots it with the stub
+  model thread and steps `coop-count-scripted`; it skips until
+  `npm run zeos:sync` has run, and needs network for jsDelivr.

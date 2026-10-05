@@ -13,7 +13,8 @@
     "test:e2e": "playwright test --project=chromium",
     "test:llm_tests": "GDA_E2E_LLM=1 playwright test --project=llm",
     "models:fetch": "node scripts/fetch-models.mjs",
-    "models:manifest": "node scripts/manifest-from-hub.mjs"
+    "models:manifest": "node scripts/manifest-from-hub.mjs",
+    "zeos:sync": "node scripts/zeos-sync.mjs"
   },
   "dependencies": {
     "@astrojs/mdx": "^4.0.0",
