@@ -50,10 +50,16 @@ The expected files and byte sizes are listed in
 
 ### Qwen 3.5 4B
 
-The Qwen entry in `site/src/lib/localLlm/models.ts` (`qwen3.5-4b`) points at
-a placeholder repo id, `onnx-community/Qwen3.5-4B-ONNX`, until an ONNX export
-is chosen. The export needs text-only q4f16 `embed_tokens` and
-`decoder_model_merged` files, like the Gemma repos. Once you've chosen one:
+The Qwen entry in `site/src/lib/localLlm/models.ts` (`qwen3.5-4b`) uses
+`onnx-community/Qwen3.5-4B-ONNX-OPT`. Use the `-OPT` export, not
+`onnx-community/Qwen3.5-4B-ONNX`. The plain export runs each
+linear-attention (Gated DeltaNet) layer's prefill as an ONNX `Scan`, which
+ONNX Runtime Web places on the CPU, with a GPU round-trip per token per
+layer. That makes prefill about 13 tok/s, versus ~250 tok/s for Gemma E4B.
+The `-OPT` export uses the fused `com.microsoft:LinearAttention` /
+`CausalConvWithState` ops, which have WebGPU kernels. The export needs
+text-only q4f16 `embed_tokens` and `decoder_model_merged` files, like the
+Gemma repos. To switch exports:
 
 1. Set `hfRepoId` in `models.ts`, and the `qwen4b` alias in
    `site/scripts/fetch-models.mjs` and in

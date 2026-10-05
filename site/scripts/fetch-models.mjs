@@ -36,7 +36,7 @@ const manifestPath = path.resolve(
 const ALIASES = {
   e2b: 'onnx-community/gemma-4-E2B-it-ONNX',
   e4b: 'onnx-community/gemma-4-E4B-it-ONNX',
-  qwen4b: 'onnx-community/Qwen3.5-4B-ONNX',
+  qwen4b: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
 };
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));

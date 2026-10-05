@@ -59,13 +59,8 @@ export const LOCAL_GEMMA_MODELS: readonly LocalGemmaModel[] = [
     id: 'qwen3.5-4b',
     label: 'Qwen 3.5 4B',
     family: 'qwen',
-    // TODO: point at the chosen ONNX export (text-only `embed_tokens` +
-    // `decoder_model_merged` q4f16 files, like the Gemma repos), then run
-    // `npm run models:manifest -- <repo>` to add its file list to
-    // modelFiles.json and set approxBytes from the printed total.
-    hfRepoId: 'onnx-community/Qwen3.5-4B-ONNX',
-    // Estimate until the export is chosen and its manifest is added.
-    approxBytes: 3_000_000_000,
+    hfRepoId: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
+    approxBytes: 2_820_843_621,
     notes: 'Alibaba Qwen 3.5. Different chat template and tool-call format from Gemma.',
   },
 ];

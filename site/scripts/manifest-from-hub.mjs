@@ -4,7 +4,7 @@
  * the Hugging Face Hub's file listing, so a newly chosen ONNX export gets the
  * same exact-size manifest the Gemma repos have.
  *
- *   npm run models:manifest -- onnx-community/Qwen3.5-4B-ONNX
+ *   npm run models:manifest -- onnx-community/Qwen3.5-4B-ONNX-OPT
  *
  * Picks the text-only q4f16 file set transformers.js fetches for
  * `<Model>ForCausalLM.from_pretrained(repo, { dtype: 'q4f16' })` + the

@@ -86,5 +86,51 @@
         "bytes": 16317
       }
     ]
+  },
+  "onnx-community/Qwen3.5-4B-ONNX-OPT": {
+    "required": [
+      {
+        "path": "config.json",
+        "bytes": 3198
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 19226111
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 9162
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx",
+        "bytes": 933554
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx_data",
+        "bytes": 2065635328
+      },
+      {
+        "path": "onnx/decoder_model_merged_q4f16.onnx_data_1",
+        "bytes": 367513600
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx",
+        "bytes": 1064
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx_data",
+        "bytes": 367513600
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 248
+      }
+    ],
+    "optional": [
+      {
+        "path": "chat_template.jinja",
+        "bytes": 7756
+      }
+    ]
   }
 }

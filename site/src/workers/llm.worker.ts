@@ -89,6 +89,26 @@ async function runModel<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Work around a transformers.js (4.3) bug in the Qwen-VL family's
+ * `prepare_inputs_for_generation`: whenever `past_key_values` is passed it
+ * sets `model_inputs.pixel_values = null`, and `generic_text_to_text_forward`
+ * then `pick`s that null (pick only skips `undefined`) and calls
+ * `encode_image` on the `vision_encoder` session a text-only load never
+ * created ("Cannot read properties of undefined (reading 'inputNames')").
+ * Upstream only hits that branch on single-token decode steps, which skip
+ * the image path; we pass our own `DynamicCache` on multi-token prefill
+ * calls, so strip the null before forward sees it.
+ */
+function dropNullPixelValues(mdl: PreTrainedModel): void {
+  const orig = mdl.prepare_inputs_for_generation.bind(mdl);
+  mdl.prepare_inputs_for_generation = (...args: Parameters<typeof orig>) => {
+    const inputs = orig(...args);
+    if (inputs && inputs.pixel_values == null) delete inputs.pixel_values;
+    return inputs;
+  };
+}
+
 /** Gemma: used when `generation_config.json` is missing or carries no EOS ids. */
 const FALLBACK_EOS_IDS = [1, TURN_CLOSE_TOKEN_ID];
 
@@ -304,6 +324,7 @@ async function handleLoad(id: number, hfId: string, nextFamily: LlmModelFamily):
       }
       const tok = tokRes.value;
       const mdl = mdlRes.value;
+      if (nextFamily === 'qwen') dropNullPixelValues(mdl);
 
       let eos = normaliseEos(mdl.generation_config?.eos_token_id);
       if (eos.length === 0) {

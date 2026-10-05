@@ -37,7 +37,7 @@ const MODELS: Record<ModelId, { repo: string; label: string; fetchArg: string }>
     fetchArg: 'e4b',
   },
   'qwen3.5-4b': {
-    repo: 'onnx-community/Qwen3.5-4B-ONNX',
+    repo: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
     label: 'Qwen 3.5 4B',
     fetchArg: 'qwen4b',
   },
