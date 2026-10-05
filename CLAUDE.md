@@ -303,8 +303,42 @@ compaction are off for this model. Side tasks such as code summaries use
 
   A switch applies from the next message: the conversation key changes, so a
   fresh run replays the history.
+- **Mask tool choice** (mask on demand). The "Mask tool choice" checkbox at
+  the bottom of the model dropdown (config `zeosMaskToolChoice`, off by
+  default, shown only for this model; the header has no room for a third
+  toggle) opens runs with ZEOS `open_chat(mask_tool_choice=True)`. While the model
+  writes a tool's name (from the step after `<tool_call>` to the `>` that
+  closes `<function=NAME>`), the ring-3 deliveries (`tools.results` and
+  replayed `chat.history` turns) are hidden from it: their own tokens, not the
+  `<tool_response>` framing. The arguments and the rest of the turn see
+  everything. The kernel frames, the system prompt, user messages, ring-2
+  results (the skill card) and trusted history stay visible. On those steps
+  the hidden segments get no attention, cannot demote, and raise no
+  `mask.denied`. A call whose name was chosen masked gets a "name masked"
+  badge (`ChatTrust.toolMasked`), the trust strip reads `strict+mask: …`, and
+  the dev journal gets a `ui.masked` line naming what was hidden. The model
+  worker runs the masked steps on a second cache (OptZeosWorker
+  `maxTracks` 2), skipping the hidden runs, so the cost is a catch-up of the
+  visible tokens since the last masked name plus a short run of the name's
+  tokens on the main cache. Measured on an M1 Max: in ZEOS's
+  8k-position bench (`export/bench/mask.html`) +1.8–2.2 s per tool call after
+  a tool result, 22–31% of the call (a rewind-and-replay each way would be
+  +7.7–17 s); in `realModelSql` one masked RunSQL after ListInputs cost
+  2.6 s (the run's turn is ~10 s a tool call), and a run with two masked
+  calls cost 7.7 s, most of it the 1.1k-token SQL skill card, which arrived
+  after the first ring-3 result and so was prefilled on both caches. Short
+  prefill runs at 7k+ positions cost 0.3–0.8 s each (8–40 tokens), which is
+  what a catch-up is. So it is off by default (the plan's bar was ~20%).
+  Behaviour: a hidden result looks empty to the model while it names the
+  tool. In two of five masked `zeosInjection` runs (both strict) it called
+  ListInputs again and again until the 10-call limit; the spec now also ends
+  a turn on "Reached max tool iterations". One of three masked
+  `realModelSql` runs failed on a malformed call (`</function>` twice), which
+  may or may not be the mask's doing.
+  `GDA_E2E_ZEOS_MASK=1` runs `realModelSql.spec.ts` with it on; the spec logs
+  `[realModelSql] zeos mask=…` with the second cache's run time either way.
 - **Runs.** There is one ZEOS `ChatRun` per conversation, keyed by system
-  prompt, thinking, gate mode and prior messages. A new chat, reload, retry or
+  prompt, thinking, gate mode, tool-choice masking and prior messages. A new chat, reload, retry or
   abort opens a fresh run and replays history (`buildZeosImport`). Past
   assistant turns replay at their recorded `ChatMessage.trust.integrity`;
   turns with no record replay as untrusted (3). A CallSkill result replays on

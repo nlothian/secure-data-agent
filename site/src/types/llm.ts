@@ -30,6 +30,12 @@ export interface LLMConfig {
    * turn ("strict", the default). Applies from the next message.
    */
   zeosAttentionOnly?: boolean;
+  /**
+   * ZEOS Qwen 4B: hide untrusted (ring-3) content from the model while it
+   * writes a tool's name (ZEOS `open_chat(mask_tool_choice=True)`). Off by
+   * default. Applies from the next message.
+   */
+  zeosMaskToolChoice?: boolean;
 }
 
 export const EMPTY_LLM_CONFIG: LLMConfig = {

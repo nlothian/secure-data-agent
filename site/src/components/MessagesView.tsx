@@ -16,7 +16,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
 } from './Icons';
-import { RingBadge, SpoofBadge } from './ZeosPanels';
+import { MaskedBadge, RingBadge, SpoofBadge } from './ZeosPanels';
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
@@ -106,6 +106,7 @@ export function CollapsibleToolCall({
   result,
   ring,
   spoofed = false,
+  masked = false,
 }: {
   name: string;
   args: string;
@@ -114,6 +115,8 @@ export function CollapsibleToolCall({
   ring?: number;
   /** ZEOS Qwen: the kernel raised a spoof alarm on the result. */
   spoofed?: boolean;
+  /** ZEOS Qwen: the tool's name was chosen with the ring-3 tool output hidden. */
+  masked?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -127,6 +130,7 @@ export function CollapsibleToolCall({
       >
         <ChevronRightIcon size={14} />
         <span className="chat-tool-name">{name}</span>
+        {masked && <MaskedBadge />}
         {spoofed && result !== null && <SpoofBadge />}
         {ring !== undefined && result !== null && <RingBadge ring={ring} />}
       </button>
@@ -237,10 +241,12 @@ function AssistantBody({
   content,
   toolRings,
   toolSpoofs,
+  toolMasked,
 }: {
   content: string;
   toolRings?: readonly number[];
   toolSpoofs?: readonly number[];
+  toolMasked?: readonly number[];
 }) {
   const segments = useMemo<AssistantSegment[]>(
     () => parseAssistantContent(content),
@@ -278,6 +284,7 @@ function AssistantBody({
             result={seg.result}
             ring={toolRings?.[index]}
             spoofed={toolSpoofs?.includes(index) ?? false}
+            masked={toolMasked?.includes(index) ?? false}
           />
         );
       })}
@@ -298,6 +305,7 @@ function renderMessageBody(
           content={m.content}
           toolRings={m.trust?.toolRings}
           toolSpoofs={m.trust?.toolSpoofs}
+          toolMasked={m.trust?.toolMasked}
         />
         {m.maxIterationsReached && onContinue && (
           <button

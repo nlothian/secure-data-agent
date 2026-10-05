@@ -26,9 +26,18 @@ export interface ZeosSpoof {
   label: string | null;
 }
 
+/** A tool name the model chose with the ring-3 deliveries hidden. */
+export interface ZeosMaskedCall {
+  name: string;
+  /** What was hidden, e.g. "ReadLines result #2". */
+  hidden: string[];
+}
+
 export interface ZeosSnapshot {
   /** The gate mode of the open conversation (or the configured one before it opens). */
   gateMode: 'strict' | 'attention';
+  /** Whether the open conversation masks tool choice (`open_chat(mask_tool_choice=…)`). */
+  maskToolChoice: boolean;
   status: 'idle' | 'starting' | 'ready' | 'error';
   statusText: string;
   error: string | null;
@@ -43,12 +52,15 @@ export interface ZeosSnapshot {
   journal: string[];
   /** Spoof alarms in this conversation, oldest first. */
   spoofs: ZeosSpoof[];
+  /** Tool names chosen masked in this conversation, oldest first. */
+  masked: ZeosMaskedCall[];
 }
 
 const JOURNAL_CAP = 2000;
 
 const INITIAL: ZeosSnapshot = {
   gateMode: 'strict',
+  maskToolChoice: false,
   status: 'idle',
   statusText: '',
   error: null,
@@ -59,6 +71,7 @@ const INITIAL: ZeosSnapshot = {
   pending: null,
   journal: [],
   spoofs: [],
+  masked: [],
 };
 
 let snapshot: ZeosSnapshot = INITIAL;
@@ -94,7 +107,7 @@ export function setStatus(
 }
 
 export function setTrust(
-  trust: Partial<Pick<ZeosSnapshot, 'integrity' | 'sessionFloor' | 'demotedBy' | 'gateMode'>>,
+  trust: Partial<Pick<ZeosSnapshot, 'integrity' | 'sessionFloor' | 'demotedBy' | 'gateMode' | 'maskToolChoice'>>,
 ): void {
   set(trust);
 }
@@ -102,7 +115,13 @@ export function setTrust(
 /** A new conversation: forget the old one's trust and journal. */
 export function resetConversation(): void {
   cancelApproval();
-  set({ integrity: null, sessionFloor: null, demotedBy: null, journal: [], spoofs: [] });
+  set({ integrity: null, sessionFloor: null, demotedBy: null, journal: [], spoofs: [], masked: [] });
+}
+
+/** Record a tool name chosen masked, and add it to the journal as a `ui.masked` line. */
+export function noteMasked(call: ZeosMaskedCall): void {
+  set({ masked: [...snapshot.masked, call] });
+  appendJournal([JSON.stringify({ kind: 'ui.masked', ...call })]);
 }
 
 /**

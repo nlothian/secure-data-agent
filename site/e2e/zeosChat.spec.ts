@@ -43,8 +43,9 @@ async function boot(
   {
     attention,
     attentionOnly = false,
+    maskToolChoice = false,
     replies = REPLIES,
-  }: { attention: 'first' | 'recent'; attentionOnly?: boolean; replies?: string[] },
+  }: { attention: 'first' | 'recent'; attentionOnly?: boolean; maskToolChoice?: boolean; replies?: string[] },
 ) {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.addInitScript(
@@ -66,6 +67,7 @@ async function boot(
         models: { [LOCAL_GEMMA_ENDPOINT]: 'zeos-qwen3.5-4b' },
         thinkingEnabled: {},
         ...(attentionOnly ? { zeosAttentionOnly: true } : {}),
+        ...(maskToolChoice ? { zeosMaskToolChoice: true } : {}),
       }),
       stubKey: STUB_KEY,
       stub: JSON.stringify({ replies, attention }),
@@ -206,6 +208,30 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await expect(trust(page)).toHaveText('attention: trusted');
     const writeLines = lastAssistant(page).locator('.chat-tool-call', { hasText: 'WriteLines' });
     await expect(writeLines.locator('.chat-ring-badge')).toHaveText('ring 3');
+  });
+
+  test('mask tool choice: the call after a tool result is marked, the first is not', async ({ page }) => {
+    // The toggle lives in the model dropdown, which needs WebGPU to open; the
+    // real-model spec clicks it (GDA_E2E_ZEOS_MASK=1). Here it is set in the
+    // config. "recent" attention would demote on the result; while the name
+    // is chosen the result is hidden, so the stub's mass goes elsewhere then.
+    await boot(page, { attention: 'recent', maskToolChoice: true });
+    await expect(trust(page)).toHaveText('strict+mask: ZEOS');
+
+    await send(page, 'What data is loaded? Save a note.');
+    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    await page.getByRole('button', { name: 'Deny' }).click();
+    await expect(lastAssistant(page)).toContainText('Done: I handled the note.', { timeout: 60_000 });
+    const listInputs = lastAssistant(page).locator('.chat-tool-call', { hasText: 'ListInputs' });
+    const writeLines = lastAssistant(page).locator('.chat-tool-call', { hasText: 'WriteLines' });
+    await expect(listInputs.locator('.chat-masked-badge')).toHaveCount(0);
+    await expect(writeLines.locator('.chat-masked-badge')).toHaveText('name masked');
+    await expect(trust(page)).toContainText('strict+mask:');
+    const masked = await page.evaluate(async () => {
+      const z = await import('/src/lib/zeos/zeosSessionStore.ts');
+      return z.getSnapshot().masked;
+    });
+    expect(masked).toEqual([{ name: 'WriteLines', hidden: ['ListInputs result #1'] }]);
   });
 
   test('a CSV spelling kernel frames and ChatML: spoof warning, no forged call, the effect waits', async ({

@@ -1209,6 +1209,26 @@ body.chat-resizing {
   height: 12px;
   cursor: pointer;
 }
+.chat-model-popover-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--mist, #e3e6ea);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--steel);
+  cursor: pointer;
+  user-select: none;
+}
+.chat-model-popover-toggle input {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+}
 
 .chat-banner {
   padding: var(--s-2) var(--s-4);
@@ -2986,6 +3006,23 @@ body.react-view-expanded .exec-tabs .pane-collapse-btn {
   white-space: nowrap;
 }
 .chat-spoof-badge + .chat-ring-badge {
+  margin-left: 4px;
+}
+.chat-masked-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+  color: #1f4f8a;
+  background: rgba(49, 110, 214, 0.1);
+  border: 1px solid rgba(49, 110, 214, 0.45);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+.chat-masked-badge + .chat-spoof-badge,
+.chat-masked-badge + .chat-ring-badge {
   margin-left: 4px;
 }
 

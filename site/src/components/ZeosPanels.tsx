@@ -56,6 +56,21 @@ export function SpoofBadge() {
   );
 }
 
+/** A tool call whose name the model chose with the ring-3 tool output hidden. */
+export function MaskedBadge() {
+  return (
+    <span
+      className="chat-masked-badge"
+      title={
+        'ZEOS hid the untrusted (ring 3) tool output from the model while it wrote ' +
+        "this tool's name, so no tool result chose it. The arguments saw everything."
+      }
+    >
+      name masked
+    </span>
+  );
+}
+
 /**
  * Chat header: the gate mode, and whether the ZEOS job is still trusted, has
  * read tool output this turn (strict mode: effects need approval until the
@@ -63,13 +78,17 @@ export function SpoofBadge() {
  */
 export function ZeosTrustIndicator({
   configuredMode,
+  configuredMask,
 }: {
   /** The mode the next conversation opens with (config). */
   configuredMode: 'strict' | 'attention';
+  /** Whether the next conversation masks tool choice (config). */
+  configuredMask?: boolean;
 }) {
   const z = useZeos();
   const open = z.integrity !== null;
-  const mode = open ? z.gateMode : configuredMode;
+  const masking = open ? z.maskToolChoice : (configuredMask ?? false);
+  const mode = `${open ? z.gateMode : configuredMode}${masking ? '+mask' : ''}`;
   let label: string;
   let state: 'trusted' | 'floor' | 'demoted' | 'starting' | 'error' | 'idle';
   let title: string;
@@ -105,16 +124,22 @@ export function ZeosTrustIndicator({
     label = `${mode}: ZEOS`;
     title = 'ZEOS kernel: trust state appears with the first message.';
   }
-  if (open && configuredMode !== mode) {
-    label += ` (${configuredMode} next)`;
-    title += ` The ${configuredMode} mode applies from your next message.`;
+  const next = `${configuredMode}${configuredMask ? '+mask' : ''}`;
+  if (open && next !== mode) {
+    label += ` (${next} next)`;
+    title += ` The ${next} mode applies from your next message.`;
+  }
+  if (masking) {
+    title += ' Tool names are chosen with the untrusted tool output hidden.';
+    if (open && z.masked.length > 0) title += ` ${z.masked.length} so far.`;
   }
   if (z.backend) title += ` (model: ${z.backend})`;
   return (
     <span
       className="chat-zeos-trust"
       data-state={state}
-      data-mode={mode}
+      data-mode={open ? z.gateMode : configuredMode}
+      data-masked={masking ? 'true' : 'false'}
       title={title}
       role="status"
     >
@@ -178,6 +203,7 @@ export function ZeosJournalView() {
         <span className="chat-zeos-journal-count">
           {z.journal.length} events
           {z.spoofs.length > 0 && ` · ${z.spoofs.length} spoof alarm${z.spoofs.length === 1 ? '' : 's'}`}
+          {z.masked.length > 0 && ` · ${z.masked.length} name${z.masked.length === 1 ? '' : 's'} masked`}
         </span>
       </button>
       {expanded && (

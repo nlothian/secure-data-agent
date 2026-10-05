@@ -21,7 +21,8 @@ export default function ModelSelector({
   onModelMenuOpenChange,
   onRequestModelReady,
 }: ModelSelectorProps) {
-  const { config, ready, setModel, setThinkingEnabled, setZeosAttentionOnly } = useLLMConfig();
+  const { config, ready, setModel, setThinkingEnabled, setZeosAttentionOnly, setZeosMaskToolChoice } =
+    useLLMConfig();
   const modelSwitcher = useLocalGemmaSwitcher({ loadOnApply: true });
 
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -158,6 +159,25 @@ export default function ModelSelector({
                 </button>
               );
             })}
+            {isLocal && resolvedActive?.family === 'zeos-qwen' && (
+              <label
+                className="chat-model-popover-toggle"
+                title={
+                  'Hide untrusted tool output from the model while it writes the name of the ' +
+                  'tool it calls, so a tool result cannot choose the next tool. The arguments ' +
+                  'still see everything. Each tool call after a tool result costs extra ' +
+                  'prefill. Applies from your next message.'
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={config.zeosMaskToolChoice ?? false}
+                  onChange={(e) => setZeosMaskToolChoice(e.target.checked)}
+                  aria-label="Mask tool choice"
+                />
+                Mask tool choice
+              </label>
+            )}
           </div>
         )}
         {pendingConfirm && (

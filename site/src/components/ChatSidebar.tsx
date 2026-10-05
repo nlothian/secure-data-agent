@@ -745,6 +745,7 @@ export default function ChatSidebar() {
           <div className="chat-zeos-strip">
             <ZeosTrustIndicator
               configuredMode={config.zeosAttentionOnly ? 'attention' : 'strict'}
+              configuredMask={config.zeosMaskToolChoice ?? false}
             />
           </div>
         )}

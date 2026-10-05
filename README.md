@@ -30,6 +30,8 @@ Chrome or Edge only for now: the model's largest weight tensor needs a single We
 - **strict:** any tool output read this turn raises the gate.
 - **attention-only:** only measured attention to ring-3 content raises it.
 
+A second toggle at the bottom of the model dropdown, **Mask tool choice** (off by default), hides ring-3 content from the model while it writes the name of the tool it calls, so a tool result cannot pick the next tool. The arguments still see everything.
+
 See [CLAUDE.md](CLAUDE.md) for setup.
 
 ### Performance
@@ -43,6 +45,7 @@ Measured in Chrome on an Apple M1 Max, with the model files already in the OS ca
 | First-turn prefill | first token at 32.8 s, ~210 tok/s | ~31 s, ~232 tok/s |
 | Later turns, first token | ~1.6 s (the run is reused) | — |
 | Decode at ~6.8k positions | 72 ms/step, ~14 tok/s | 17–18 tok/s |
+| Mask tool choice (off by default), per tool call after a tool result | +1.8–2.2 s at ~8k positions in a bench (22–31% of the call); 2.6–3.9 s a masked call in the SQL e2e (more when content arrives after the first tool result, such as the 1.1k-token skill card, which is then prefilled on both caches) | — |
 
 - **Decode overhead:** most of the gap comes from the graph's measured-attention output, since the graph alone takes 68 ms a step. The kernel, the Atomics channel and the event stream add about 4 ms per token.
 - **Model worker alone:** load in 3.8–4.2 s (files cached). Prefill runs at 288–305 tok/s. Decode takes 47–49 ms a step at ~1k positions, about 21 tok/s.

@@ -53,6 +53,12 @@ const MODELS: Record<ModelId, { repo: string; label: string; fetchArg: string }>
 const MODEL_ID = (process.env.GDA_E2E_MODEL ?? 'gemma-4-e4b') as ModelId;
 const MODEL = MODELS[MODEL_ID];
 const IS_ZEOS = MODEL_ID === 'zeos-qwen3.5-4b';
+/**
+ * ZEOS only: GDA_E2E_ZEOS_MASK=1 turns on "Mask tool choice" (the model
+ * writes each tool's name with the ring-3 tool output hidden), and the spec
+ * logs what the masked names cost, from the model thread's run timings.
+ */
+const ZEOS_MASK = IS_ZEOS && process.env.GDA_E2E_ZEOS_MASK === '1';
 if (!MODEL) {
   throw new Error(
     `GDA_E2E_MODEL=${MODEL_ID} is not one of: ${Object.keys(MODELS).join(', ')}`,
@@ -224,6 +230,15 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
       }, MODEL_ID);
     }
 
+    if (ZEOS_MASK) {
+      // In the model dropdown, below the models.
+      await dropdown.click();
+      const toggle = page.locator('[data-tour-id="chat.modelPopover"]').getByLabel('Mask tool choice');
+      await toggle.check();
+      await expect(toggle).toBeChecked();
+      await page.keyboard.press('Escape');
+    }
+
     // Model committed + loaded → the composer is no longer "unconfigured".
     const composer = page.locator('[data-tour-id="chat.messageEntry"]');
     await expect(composer).toBeEnabled({ timeout: 60_000 });
@@ -289,6 +304,50 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
       await expect(grid.locator('tbody tr')).not.toHaveCount(0);
     } finally {
       clearInterval(pump);
+    }
+
+    if (IS_ZEOS) {
+      // What the masked names cost (and, unmasked, the baseline): the graph
+      // runs on a second cache (track) while a name is chosen, and the main
+      // cache's catch-up run of the name's tokens after it, less the decode
+      // step that run stands in for.
+      const summary = await page.evaluate(async () => {
+        const z = await import('/src/lib/zeos/zeosSessionStore.ts');
+        const log = ((globalThis as { __zeosActivity?: Record<string, number | string>[] }).__zeosActivity ?? []);
+        const decodes = log.filter((a) => a.phase === 'decode').map((a) => a.ms as number).sort((a, b) => a - b);
+        const decodeMs = decodes.length ? decodes[Math.floor(decodes.length / 2)] : 0;
+        const main = log.find((a) => a.phase === 'prefill')?.track;
+        let alt = 0;
+        let catchUp = 0;
+        let altRuns = 0;
+        for (let i = 0; i < log.length; i++) {
+          const a = log[i];
+          if (a.track !== main) {
+            if (a.phase === 'prefill') alt += a.ms as number;
+            altRuns += 1;
+          } else if (i > 0 && log[i - 1].track !== main && a.phase === 'prefill') {
+            catchUp += (a.ms as number) - decodeMs;
+          }
+        }
+        const last = log.at(-1);
+        return {
+          masked: z.getSnapshot().masked,
+          runs: log.length,
+          length: last?.length,
+          decodeMs,
+          altPrefillMs: Math.round(alt),
+          altRuns,
+          catchUpExtraMs: Math.round(catchUp),
+          overheadMs: Math.round(alt + catchUp),
+          toolLog: (globalThis as { __zeosToolLog?: unknown[] }).__zeosToolLog ?? [],
+        };
+      });
+      console.log(`[realModelSql] zeos mask=${ZEOS_MASK} ${JSON.stringify(summary)}`);
+      test.info().annotations.push({ type: 'zeos-mask', description: JSON.stringify(summary) });
+      // Unmasked, nothing ever narrows the mask, so no second cache runs.
+      // Masked, a name is chosen masked only after a ring-3 result, which
+      // depends on the calls the model makes, so that is logged, not asserted.
+      if (!ZEOS_MASK) expect(summary.altRuns).toBe(0);
     }
 
     // Local-models mode must never touch the Hub.

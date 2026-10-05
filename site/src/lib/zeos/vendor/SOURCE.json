@@ -1,13 +1,13 @@
 {
   "repo": "zeos-task2-transformers",
   "branch": "feat/zeos-opt-chat",
-  "commit": "e944c05f7990794f399dba77918fcdc5177987b6",
+  "commit": "dfe8b126405ba62bf3ea44817ed013ec36b59b05",
   "dirty": false,
   "files": {
     "frames.js": "292b9837b4ef96e6c205ec5a7c143e62d0ab5632a89ef62bf86b250feabb1377",
     "model_channel.js": "a8d64af9ca377db964690311979924da9ef985ba21e910f663755ed17d8295bf",
     "stub_worker.js": "400a915ee73ab35d3384e33fb557fdcf3ffef4e9335ffd4b27f84f8fa61244ba",
-    "opt_zeos_worker.js": "c85a22409764535bcc00d2bfb9989903ff072bfb98c05a81d7b4fec8058ca6ff",
+    "opt_zeos_worker.js": "602f7879c840d2d2a3119fad1b2b4cb7ef72e32866bc6044599d599ae0fdeb23",
     "transformers_worker.js": "d3a4a5648a3ad36eeee6e18e93bfd6296d755ef03c34668e5596ea1e2f554211"
   }
 }

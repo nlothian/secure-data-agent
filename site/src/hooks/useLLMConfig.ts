@@ -54,6 +54,7 @@ function readStorage(): LLMConfig | null {
       models: parsed.models ?? {},
       thinkingEnabled: parsed.thinkingEnabled ?? {},
       ...(parsed.zeosAttentionOnly === true ? { zeosAttentionOnly: true } : {}),
+      ...(parsed.zeosMaskToolChoice === true ? { zeosMaskToolChoice: true } : {}),
     };
   } catch {
     return null;
@@ -124,6 +125,7 @@ export interface UseLLMConfigResult {
   setModel: (endpointUrl: string, model: string) => void;
   setThinkingEnabled: (endpointUrl: string, enabled: boolean) => void;
   setZeosAttentionOnly: (enabled: boolean) => void;
+  setZeosMaskToolChoice: (enabled: boolean) => void;
   addCustomEndpoint: () => string;
   updateCustomEndpoint: (
     id: string,
@@ -294,6 +296,13 @@ export function useLLMConfig(): UseLLMConfigResult {
     });
   }, []);
 
+  const setZeosMaskToolChoice = useCallback((enabled: boolean): void => {
+    update((prev) => {
+      const { zeosMaskToolChoice: _old, ...rest } = prev;
+      return enabled ? { ...rest, zeosMaskToolChoice: true } : rest;
+    });
+  }, []);
+
   return {
     config,
     ready: hydrated,
@@ -302,6 +311,7 @@ export function useLLMConfig(): UseLLMConfigResult {
     setModel,
     setThinkingEnabled,
     setZeosAttentionOnly,
+    setZeosMaskToolChoice,
     addCustomEndpoint,
     updateCustomEndpoint,
     removeCustomEndpoint,

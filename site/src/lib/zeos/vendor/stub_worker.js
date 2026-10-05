@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/stub_worker.js
-// at e944c05f7990794f399dba77918fcdc5177987b6 by site/scripts/zeos-sync.mjs.
+// at dfe8b126405ba62bf3ea44817ed013ec36b59b05 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI

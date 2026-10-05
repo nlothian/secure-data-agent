@@ -33,6 +33,10 @@ interface CallFields {
   sink: string;
   /** Where the job reads the answer: `tools.results`, or `tools.results.trusted`. */
   results: string;
+  /** The name was chosen with the ring-3 deliveries hidden (`mask_tool_choice`). */
+  name_masked?: boolean;
+  /** The segment ids hidden while the name was chosen. */
+  name_hidden?: number[];
 }
 
 interface RefusalFields extends CallFields {
@@ -88,6 +92,8 @@ export interface ZeosChatOpenOptions {
   seed?: number;
   /** `KernelConfig.theta_read`: a tool result's mass over one block that demotes. */
   thetaRead?: number;
+  /** Hide ring-3 deliveries while the model writes a tool's name (`open_chat(mask_tool_choice=…)`). */
+  maskToolChoice?: boolean;
 }
 
 export interface ZeosChatRun {
@@ -244,6 +250,7 @@ export async function startKernelChatEngine(
           ...(sampling ? { sampling } : {}),
           ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
           ...(opts.thetaRead !== undefined ? { theta_read: opts.thetaRead } : {}),
+          ...(opts.maskToolChoice ? { mask_tool_choice: true } : {}),
         },
       );
       if (sampling) await kernel.release(sampling).catch(() => undefined);
@@ -254,16 +261,27 @@ export async function startKernelChatEngine(
 }
 
 /**
- * Dev: the model thread's per-run timings (`{phase, count, length, ms}` from
- * OptZeosWorker's `onActivity`), on `window.__zeosActivity`, so the time a
- * decode step spends in the graph can be told from the kernel's and the
- * channel's share.
+ * Dev: the model thread's per-run timings (`{phase, count, length, ms,
+ * track, hidden}` from OptZeosWorker's `onActivity`), on
+ * `window.__zeosActivity`, so the time a decode step spends in the graph can
+ * be told from the kernel's and the channel's share. `track` numbers the
+ * cache the run used (a masked tool name runs on a second one), `hidden` is
+ * how many positions its mask hid, and phase `skip` is a hidden run carried
+ * past without running it.
  */
 function recordActivity(a: Record<string, unknown>): void {
   if (typeof a.ms !== 'number') return;
   const w = globalThis as { __zeosActivity?: Record<string, unknown>[] };
   const log = (w.__zeosActivity ??= []);
-  log.push({ phase: a.phase, count: a.count, length: a.length, ms: Math.round(a.ms as number), at: Math.round(performance.now()) });
+  log.push({
+    phase: a.phase,
+    count: a.count,
+    length: a.length,
+    track: a.track,
+    hidden: a.hidden,
+    ms: Math.round(a.ms as number),
+    at: Math.round(performance.now()),
+  });
   if (log.length > 5000) log.splice(0, log.length - 5000);
 }
 

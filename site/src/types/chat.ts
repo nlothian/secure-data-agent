@@ -20,6 +20,11 @@ export interface ChatTrust {
   toolRings?: number[];
   /** Indices into `toolRings` of results that spelled a kernel frame (ZEOS spoof alarm). */
   toolSpoofs?: number[];
+  /**
+   * Indices into `toolRings` of calls whose tool name the model chose with the
+   * ring-3 tool output hidden (ZEOS mask on demand).
+   */
+  toolMasked?: number[];
   /** What demoted the job, if anything, e.g. "ReadLines result #3". */
   demotedBy?: string;
 }

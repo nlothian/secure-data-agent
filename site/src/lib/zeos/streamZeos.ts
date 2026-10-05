@@ -19,7 +19,11 @@
  * `tools.results.trusted` (ring 2) for a result the app wrote itself
  * (`ZEOS_TRUSTED_RESULTS`: a bundled skill card). A `spoof` event (the
  * kernel's alarm on a result spelling a kernel frame) marks that result in
- * the chat (`ChatTrust.toolSpoofs`) and the journal. An
+ * the chat (`ChatTrust.toolSpoofs`) and the journal. With "Mask tool choice"
+ * on (`config.zeosMaskToolChoice`, ZEOS `mask_tool_choice`), the model writes
+ * each tool's name with the ring-3 tool output hidden; a call whose name was
+ * chosen that way is marked in the chat (`ChatTrust.toolMasked`) and the
+ * journal (`ui.masked`). An
  * `approval_required` event (the kernel refused a write to `tools.effect` for
  * privilege) shows the approval card: Approve runs the call under the user's
  * authority and delivers its result, Deny delivers a refusal. The turn ends
@@ -204,16 +208,18 @@ export async function __setZeosEngineForTests(
 
 /**
  * What a run was opened for. Anything that changes it -- the past, the system
- * prompt, thinking, the gate mode -- opens a fresh run and replays history, so
- * a mode switch mid-chat applies from the next message.
+ * prompt, thinking, the gate mode, tool-choice masking -- opens a fresh run
+ * and replays history, so a mode switch mid-chat applies from the next
+ * message.
  */
 function conversationKey(
   system: string,
   thinking: boolean,
   gateMode: ZeosGateMode,
+  maskToolChoice: boolean,
   turns: readonly StreamChatMessage[],
 ): string {
-  return JSON.stringify([system, thinking, gateMode, turns.map((m) => [m.role, m.content])]);
+  return JSON.stringify([system, thinking, gateMode, maskToolChoice, turns.map((m) => [m.role, m.content])]);
 }
 
 function segmentLabel(seg: Pick<ZeosSegment, 'pipe' | 'segment'>, s: Session): string {
@@ -333,6 +339,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   const { config, messages, signal, onToken, onHistoryDelta, onDone, onError, onUsage } = opts;
   const thinking = config.thinkingEnabled?.[LOCAL_GEMMA_ENDPOINT] ?? false;
   const gateMode: ZeosGateMode = config.zeosAttentionOnly ? 'attention' : 'strict';
+  const maskToolChoice = config.zeosMaskToolChoice ?? false;
   const tools: AgentToolSpec[] = zeosAgentTools(opts.tools ?? []);
   const features = { ...getFeatures(), runSubAgent: false };
   const baseDispatch =
@@ -366,17 +373,20 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     return;
   }
   const prior = turns.slice(0, -1);
-  const key = conversationKey(system, thinking, gateMode, prior);
+  const key = conversationKey(system, thinking, gateMode, maskToolChoice, prior);
 
   const toolRings: number[] = [];
   /** Indices into `toolRings` of results the kernel raised a spoof alarm on. */
   const toolSpoofs: number[] = [];
+  /** Indices into `toolRings` of calls whose name was chosen masked. */
+  const toolMasked: number[] = [];
   const reportTrust = (s: Session): void => {
     const trust: ChatTrust = {
       integrity: s.integrity,
       ring: s.integrity,
       toolRings: [...toolRings],
       ...(toolSpoofs.length > 0 ? { toolSpoofs: [...toolSpoofs] } : {}),
+      ...(toolMasked.length > 0 ? { toolMasked: [...toolMasked] } : {}),
       ...(s.demotedBy ? { demotedBy: s.demotedBy } : {}),
     };
     opts.onTrust?.(trust);
@@ -393,7 +403,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     if (!session || session.key !== key) {
       await dropSession();
       store.resetConversation();
-      store.setTrust({ gateMode });
+      store.setTrust({ gateMode, maskToolChoice });
       const seed = runSeed();
       const run = await eng.open({
         systemPrompt: renderQwenSystemContent(zeosSystemPrompt(system, features), tools),
@@ -405,6 +415,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         sampling: sampling(),
         seed,
         thetaRead: thetaRead(),
+        maskToolChoice,
       });
       const s: Session = { run, key, segments: new Map(), toolCount: 0, integrity: TRUSTED, demotedBy: null };
       session = s;
@@ -435,6 +446,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     let pendingResultLabel: string | null = null;
     /** What the latest arrival was, for a spoof alarm on it. */
     let lastResultLabel: string | null = null;
+
+    /** A call whose name was chosen masked: its result will be the next `toolRings` entry. */
+    const noteMasked = (e: { name: string; name_masked?: boolean; name_hidden?: number[] }): void => {
+      if (!e.name_masked) return;
+      toolMasked.push(toolRings.length);
+      store.noteMasked({ name: e.name, hidden: (e.name_hidden ?? []).map((id) => s.segments.get(id) ?? `segment ${id}`) });
+    };
 
     const runCall = async (
       name: string,
@@ -488,6 +506,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             break;
           case 'tool_call': {
             text.callClosed();
+            noteMasked(e);
             await s.run.drain(e.sink);
             if (++calls > MAX_TOOL_CALLS) {
               emit('\n\nReached max tool iterations');
@@ -501,6 +520,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
           }
           case 'approval_required': {
             text.callClosed();
+            noteMasked(e);
             sessionFloor = e.session_floor;
             store.setTrust({ integrity: e.integrity, sessionFloor: e.session_floor, demotedBy: s.demotedBy });
             const approved = await store.requestApproval(
@@ -536,6 +556,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
           }
           case 'tool_refused': {
             text.callClosed();
+            noteMasked(e);
             const refusal = JSON.stringify({ error: `The kernel refused this call: ${e.detail}` });
             text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
             s.toolCount += 1;
@@ -577,7 +598,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     store.setTrust({ integrity: s.integrity, sessionFloor, demotedBy: s.demotedBy });
     reportTrust(s);
     // The run now holds exactly the conversation the next request will send.
-    s.key = conversationKey(system, thinking, gateMode, [
+    s.key = conversationKey(system, thinking, gateMode, maskToolChoice, [
       ...prior,
       last,
       { role: 'assistant', content: history || accumulated },

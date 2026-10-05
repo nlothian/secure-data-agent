@@ -355,6 +355,52 @@ describe('streamZeos', () => {
     expect(store.getSnapshot().gateMode).toBe('attention');
   });
 
+  it('opens runs with tool-choice masking only when configured, and a switch takes a fresh run', async () => {
+    const reply = (t: string): ZeosEvent[][] => [[...tokens(t), { type: 'reply', text: t, reasoning: null, raw: '' }, { type: 'waiting', pipe: 'chat.user' }]];
+    await useEngine([reply('One.'), reply('Two.')]);
+    const first = await send([{ role: 'user', content: 'a' }]).done;
+    expect(engine.opened[0].maskToolChoice).toBe(false);
+    expect(store.getSnapshot().maskToolChoice).toBe(false);
+    await send(
+      [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: first.history },
+        { role: 'user', content: 'b' },
+      ],
+      {},
+      { ...CONFIG, zeosMaskToolChoice: true },
+    ).done;
+    expect(engine.opened.map((o) => o.maskToolChoice)).toEqual([false, true]);
+    expect(engine.opened[1].gateMode).toBe('strict');
+    expect(engine.runs[1].log[0][0]).toBe('importHistory');
+    expect(store.getSnapshot().maskToolChoice).toBe(true);
+  });
+
+  it('marks a call whose name was chosen masked, and journals what was hidden', async () => {
+    await useEngine([
+      [
+        [...tokens(callText('ListInputs')), { type: 'tool_call', call: 0, name: 'ListInputs', arguments: {}, sink: 'tools.read', results: 'tools.results', name_masked: false, name_hidden: [] }],
+        [
+          { type: 'arrived', pipe: 'tools.results', segment: 7, ring: 3, integrity: 3 },
+          ...tokens(callText('ListFiles')),
+          { type: 'tool_call', call: 1, name: 'ListFiles', arguments: {}, sink: 'tools.read', results: 'tools.results', name_masked: true, name_hidden: [7] },
+        ],
+        [
+          { type: 'arrived', pipe: 'tools.results', segment: 9, ring: 3, integrity: 3 },
+          ...tokens('Done.'),
+          { type: 'reply', text: 'Done.', reasoning: null, raw: '' },
+          { type: 'waiting', pipe: 'chat.user' },
+        ],
+      ],
+    ]);
+    const c = await send([{ role: 'user', content: 'list' }], {}, { ...CONFIG, zeosMaskToolChoice: true }).done;
+    expect(c.error).toBeNull();
+    expect(c.trust.at(-1)).toMatchObject({ toolRings: [3, 3], toolMasked: [1] });
+    expect(store.getSnapshot().masked).toEqual([{ name: 'ListFiles', hidden: ['ListInputs result #1'] }]);
+    const lines = store.getSnapshot().journal.map((l) => JSON.parse(l));
+    expect(lines).toContainEqual({ kind: 'ui.masked', name: 'ListFiles', hidden: ['ListInputs result #1'] });
+  });
+
   it('in attention mode, a tool result read leaves effects ungated until a demotion', async () => {
     // The kernel decides; this checks the loop runs the effect straight away
     // when the kernel lets it land, and tracks no floor from the result.
