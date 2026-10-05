@@ -37,6 +37,26 @@ export function RingBadge({ ring }: { ring: number }) {
 }
 
 /**
+ * A tool result that spelled a kernel frame (`<KERNEL>`, `<FAULT …>`, …): the
+ * kernel treated it as inert data and raised a spoof alarm.
+ */
+export function SpoofBadge() {
+  return (
+    <span
+      className="chat-spoof-badge"
+      role="img"
+      aria-label="Spoof alarm"
+      title={
+        'This result spells a ZEOS kernel frame (such as <KERNEL> or <FAULT>). ' +
+        'The kernel treated it as data, not a notice, and raised a spoof alarm.'
+      }
+    >
+      ⚠ spoof
+    </span>
+  );
+}
+
+/**
  * Chat header: the gate mode, and whether the ZEOS job is still trusted, has
  * read tool output this turn (strict mode: effects need approval until the
  * next message), or was demoted by measured attention, and by what.
@@ -155,7 +175,10 @@ export function ZeosJournalView() {
       >
         <ChevronRightIcon size={14} />
         <span className="chat-tool-name">ZEOS journal</span>
-        <span className="chat-zeos-journal-count">{z.journal.length} events</span>
+        <span className="chat-zeos-journal-count">
+          {z.journal.length} events
+          {z.spoofs.length > 0 && ` · ${z.spoofs.length} spoof alarm${z.spoofs.length === 1 ? '' : 's'}`}
+        </span>
       </button>
       {expanded && (
         <div className="chat-tool-body">

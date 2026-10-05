@@ -2972,6 +2972,22 @@ body.react-view-expanded .exec-tabs .pane-collapse-btn {
   background: rgba(0, 168, 107, 0.08);
   border-color: rgba(0, 168, 107, 0.4);
 }
+.chat-spoof-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+  color: #8a1c1c;
+  background: rgba(214, 48, 49, 0.1);
+  border: 1px solid rgba(214, 48, 49, 0.45);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+.chat-spoof-badge + .chat-ring-badge {
+  margin-left: 4px;
+}
 
 .chat-zeos-approval {
   margin: 0 var(--s-3) var(--s-2);

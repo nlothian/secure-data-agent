@@ -8,7 +8,7 @@
 import type { LocalGemmaModel } from '../localLlm/models';
 import { modelRef, startZeos, type ZeosHandle, type ZeosKernel } from './zeosHost';
 import { createZeosLoadProgress, zeosModelThreadFor } from './zeosModelWorker';
-import type { ToolClassEntry } from './zeosToolClasses';
+import type { ToolClassEntry, TrustedResultRule } from './zeosToolClasses';
 import type { ZeosImportTurn } from './zeosHistory';
 import { installAttentionProbe, readAttentionLog, type AttentionLog } from './attentionProbe';
 import { detectWebGpu } from '../localLlm/webgpu';
@@ -31,6 +31,8 @@ interface CallFields {
   name: string;
   arguments: Record<string, unknown>;
   sink: string;
+  /** Where the job reads the answer: `tools.results`, or `tools.results.trusted`. */
+  results: string;
 }
 
 interface RefusalFields extends CallFields {
@@ -76,6 +78,8 @@ export interface ZeosChatOpenOptions {
   systemPrompt: string;
   gateMode: ZeosGateMode;
   toolClasses: Readonly<Record<string, ToolClassEntry>>;
+  /** Calls whose results the app wrote itself (`open_chat(trusted_results=…)`). */
+  trustedResults?: Readonly<Record<string, TrustedResultRule>>;
   paramTypes: Record<string, Record<string, string>>;
   thinking: boolean;
   /** `null` (the default) is greedy. */
@@ -92,7 +96,8 @@ export interface ZeosChatRun {
   step(ticks: number): Promise<ZeosEvent[]>;
   waitingOn(): Promise<string | null>;
   drain(pipe: string): Promise<string[]>;
-  deliverToolResult(text: string): Promise<void>;
+  /** `trusted`: on `tools.results.trusted` (ring 2); it must match the call's `results`. */
+  deliverToolResult(text: string, trusted?: boolean): Promise<void>;
   deliverRefusal(text?: string): Promise<void>;
   journalLines(): Promise<string[]>;
   /** Dev measurement: per-step and per-block attention on segments (./attentionProbe.ts). */
@@ -122,7 +127,9 @@ class KernelChatRun implements ZeosChatRun {
       turns.map((t) =>
         t.role === 'assistant'
           ? { role: t.role, text: t.text, integrity: t.integrity ?? 3 }
-          : { role: t.role, text: t.text },
+          : t.role === 'tool' && t.trusted
+            ? { role: t.role, text: t.text, trusted: true }
+            : { role: t.role, text: t.text },
       ),
     );
   }
@@ -138,8 +145,8 @@ class KernelChatRun implements ZeosChatRun {
   drain(pipe: string) {
     return this.m<string[]>('drain', pipe);
   }
-  deliverToolResult(text: string) {
-    return this.m<void>('deliver_tool_result', text);
+  deliverToolResult(text: string, trusted = false) {
+    return this.kernel.callMethod<void>(this.run, 'deliver_tool_result', [text], { trusted });
   }
   deliverRefusal(text?: string) {
     return text === undefined ? this.m<void>('deliver_refusal') : this.m<void>('deliver_refusal', text);
@@ -233,6 +240,7 @@ export async function startKernelChatEngine(
           thinking: opts.thinking,
           param_types: opts.paramTypes,
           gate_mode: opts.gateMode,
+          ...(opts.trustedResults ? { trusted_results: opts.trustedResults } : {}),
           ...(sampling ? { sampling } : {}),
           ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
           ...(opts.thetaRead !== undefined ? { theta_read: opts.thetaRead } : {}),

@@ -12,8 +12,14 @@ export interface ChatTrust {
   integrity: number;
   /** The ring the turn's text is replayed on after a reload (`chat.history[.trusted]`). */
   ring: number;
-  /** The ring each tool result of the turn arrived on, in order (always 3 today). */
+  /**
+   * The ring each tool result of the turn arrived on, in order: 3, or 2 for a
+   * result the app wrote itself (a bundled skill card). History import keeps
+   * a result recorded at 3 on ring 3.
+   */
   toolRings?: number[];
+  /** Indices into `toolRings` of results that spelled a kernel frame (ZEOS spoof alarm). */
+  toolSpoofs?: number[];
   /** What demoted the job, if anything, e.g. "ReadLines result #3". */
   demotedBy?: string;
 }

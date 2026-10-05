@@ -59,6 +59,8 @@ export interface InternalMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
   toolName?: string;
+  /** Tool results from `importHistoryForQwen`: the call's arguments, as JSON. */
+  toolArgsJson?: string;
 }
 
 // ---- formatting argument values to the Gemma 4 wire format -----------------

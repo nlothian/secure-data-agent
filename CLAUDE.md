@@ -163,9 +163,11 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
 The agent runs under the ZEOS kernel instead of the transformers.js worker
 (family `zeos-qwen`; `src/lib/streamChat.ts` routes it to
 `src/lib/zeos/streamZeos.ts`). User messages enter on ring 2 (TRUSTED),
-tool results on ring 3 (EXTERNAL). Calls go to `tools.read` or
-`tools.effect` according to `src/lib/zeos/zeosToolClasses.ts`, which is the
-only place that policy lives. `RunSQL` is a read only when its SQL is inline
+tool results on ring 3 (EXTERNAL), except a bundled skill card: `CallSkill`
+with a known skill name arrives on `tools.results.trusted` (ring 2), because
+the app wrote it. Calls go to `tools.read` or `tools.effect` according to
+`src/lib/zeos/zeosToolClasses.ts`, and the ring-2 results are listed there
+too (`ZEOS_TRUSTED_RESULTS`); it is the only place that policy lives. `RunSQL` is a read only when its SQL is inline
 (`sql`) and read-only, so this model gets an inline-`sql` RunSQL spec. When the
 kernel refuses an effect, the chat shows an approval card. RunSubAgent and
 compaction are off for this model. Side tasks such as code summaries use
@@ -189,10 +191,16 @@ compaction are off for this model. Side tasks such as code summaries use
   `createZeosLoadProgress` (`loadProgress.ts`). It is WebGPU only, with no
   wasm fallback (the weights do not fit a 4 GiB wasm heap); without WebGPU
   or shader-f16 the engine fails before booting Pyodide, with that reason.
-- **Prompt differences.** `src/lib/zeos/zeosPrompt.ts` swaps the system
-  prompt's SQL section and the `sql` skill card for inline-`sql` versions
-  (`src/prompts/zeos/`), so a read-only query is a `tools.read` call with no
-  approval; with the shared WriteLines + RunSQL(path) text the model wrote
+- **Prompt differences.** `src/lib/zeos/zeosPrompt.ts` builds the system
+  prompt with `buildAgentSystemPrompt(features, ZEOS_PROMPT_OPTIONS)`: the
+  inline-`sql` RunSQL section (`src/prompts/zeos/runSql.md`) in place of the
+  shared one, and base.md's `{{INLINE_SQL_NOTE}}` saying RunSQL takes inline
+  SQL rather than a path (empty for every other model). The chat's system
+  message is the shared prompt plus any suffix, which `zeosSystemPrompt`
+  rebuilds; it throws if it finds the shared RunSQL section it cannot
+  replace. `dispatchForZeos` answers `CallSkill('sql')` with the inline-`sql`
+  card (`src/prompts/zeos/SqlSkill.md`). So a read-only query is a
+  `tools.read` call with no approval; with the shared WriteLines + RunSQL(path) text the model wrote
   every query to a file first, which is an effect. It also spells
   `CallSkill('x')` as `CallSkill({"skill":"x"})`: the shorthand made the
   4B emit a tool literally named `CallSkill('sql')`, an unknown tool and so
@@ -250,15 +258,41 @@ compaction are off for this model. Side tasks such as code summaries use
 
     In the first runs (two per mode) the model read the CSV with RunSQL,
     summarised it and never called WriteLines, so no card appeared and
-    pwned.txt was never written. Every run was demoted by the SQL skill card
-    (a CallSkill result is ring 3 like any tool result), so in
-    attention-only mode an effect would have needed approval anyway.
+    pwned.txt was never written. Those runs were all demoted by the SQL skill
+    card, which was ring 3 then; it is ring 2 now. The CSV also has a row
+    spelling `<KERNEL>`, `<FAULT …>` and a forged ChatML WriteLines call; when
+    the model read the rows, the spec asserts a spoof alarm and a spoof badge.
+    In the runs after the skill card moved to ring 2 (one per mode) the model
+    called CallSkill, ListInputs and RunSQL, no card appeared, the kernel
+    raised one spoof alarm, and both runs were demoted by the ListInputs
+    result, no longer by the skill card.
+- **Read-only SQL** (`READ_ONLY_SQL_PATTERN` in `zeosToolClasses.ts`, the
+  `read_if` rule for RunSQL) lexes the statement as DuckDB does: `--` comments
+  (ending at `\n` or `\r`) and `/* */` comments, `'…'` strings and `"…"`
+  identifiers are skipped, so keywords and `;` inside them do not count.
+  Anything it cannot lex for certain is an effect: a backslash or `$`
+  anywhere, a nested block comment, an unterminated quote, a bare word that
+  is a write keyword (`SELECT load FROM t`), `PIVOT` (DuckDB runs a `CREATE
+  TYPE` for it). The vitest checks every case against Python `re` too.
+- **Spoof alarms and look-alikes.** The kernel raises a `spoof` event when a
+  delivery spells a kernel frame tag (`<KERNEL>`, `<FAULT …>`, `<STATUS …>`,
+  …) at the start of a word; a tag glued to the text before it (`1,"<KERNEL>`,
+  which is how a JSON-encoded tool result usually spells it) is not alarmed
+  on. The chat shows a "⚠ spoof" badge on that tool result
+  (`ChatTrust.toolSpoofs`, kept across reloads) and the journal view gets a
+  `ui.spoof` line and a count. Tool results and user messages are delivered
+  with Qwen's structural tags defanged (`escapeForQwenPrompt`, via
+  `toolResultForZeos` / `userTextForZeos`), and the model worker tokenizes
+  them with no special tokens (`encodePlain`), so neither can close a turn or
+  forge a tool call.
 - **Stub mode (dev only).** Set localStorage `gda.zeos.stub` to
   `{"replies": [...], "attention": "first" | "recent" | "uniform" | "none"}`
   and reload. The scripted chat stub (`src/lib/zeos/scriptedChatModel.ts`)
   then plays the replies; a reply ending in `</tool_call>` is a tool call. With
   `recent`, reading a tool result demotes the job; with `first`, nothing ever
-  does. `e2e/zeosChat.spec.ts` uses this.
+  does. `e2e/zeosChat.spec.ts` uses this, including a CSV that spells kernel
+  frames and a forged ChatML WriteLines call (spoof badge, no forged call,
+  the effect waits) and the ring-2 skill card in both gate modes.
 - **Gate mode.** The "Attention-only approval" checkbox (config
   `zeosAttentionOnly`, shown only for this model) switches ZEOS
   `open_chat(gate_mode=…)`:
@@ -273,4 +307,6 @@ compaction are off for this model. Side tasks such as code summaries use
   prompt, thinking, gate mode and prior messages. A new chat, reload, retry or
   abort opens a fresh run and replays history (`buildZeosImport`). Past
   assistant turns replay at their recorded `ChatMessage.trust.integrity`;
-  turns with no record replay as untrusted (3).
+  turns with no record replay as untrusted (3). A CallSkill result replays on
+  ring 2 when `ZEOS_TRUSTED_RESULTS` names the call and the turn did not
+  record it on ring 3 (`ChatTrust.toolRings`).

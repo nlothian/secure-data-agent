@@ -178,7 +178,12 @@ describe('importHistoryForQwen', () => {
         content:
           'Checking.\n\n<tool_call>\n<function=RunSQL>\n<parameter=sql>\nSELECT 1\n</parameter>\n</function>\n</tool_call>',
       },
-      { role: 'tool', toolName: 'RunSQL', content: JSON.stringify({ rows: [[1]] }) },
+      {
+        role: 'tool',
+        toolName: 'RunSQL',
+        toolArgsJson: JSON.stringify({ sql: 'SELECT 1' }),
+        content: JSON.stringify({ rows: [[1]] }),
+      },
       { role: 'assistant', content: 'Done.' },
     ]);
   });

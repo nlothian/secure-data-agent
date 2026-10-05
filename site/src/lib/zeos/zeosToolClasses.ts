@@ -19,8 +19,15 @@
  * The patterns stay inside the syntax Python's `re` and JavaScript's
  * `RegExp` share (the machine compiles them with IGNORECASE | DOTALL, here
  * `is`), and use ASCII word boundaries written out, since `\b` differs.
+ *
+ * `ZEOS_TRUSTED_RESULTS` is the other half of the policy: which results the
+ * app wrote itself, so they arrive on `tools.results.trusted` (ring 2)
+ * instead of `tools.results` (ring 3). The machine picks the pipe from the
+ * call (`open_chat(trusted_results=…)`), and `streamZeos` delivers with
+ * `trusted` from `isTrustedToolResult`; ZEOS refuses a delivery where the two
+ * disagree.
  */
-import type { AgentToolSpec } from '../agentTools';
+import { CALL_SKILL_NAMES, type AgentToolSpec } from '../agentTools';
 
 export type ToolClass = 'read' | 'effect';
 
@@ -36,21 +43,27 @@ const NOT_WORD_BEFORE = '(?<![A-Za-z0-9_])';
 const NOT_WORD_AFTER = '(?![A-Za-z0-9_])';
 
 /**
- * Keywords that make a statement something other than a read anywhere they
- * appear (including inside string literals and comments: a false "effect" only
- * asks the user, a false "read" would bypass them). Covers DuckDB's DML, DDL,
- * file and extension access, settings and transactions, and `EXPLAIN ANALYZE`
- * of a write. `QUERY` catches the `query()` table function.
+ * Keywords that make a statement something other than a read wherever they
+ * appear as a bare word in the SQL's code: DuckDB's DML, DDL, file and
+ * extension access, settings and transactions, `EXPLAIN ANALYZE` of a write,
+ * and functions with side effects. Inside a string literal, a quoted
+ * identifier or a comment they are only text. A bare column or alias with one
+ * of these names (`SELECT load FROM t`) is still an effect: a false "effect"
+ * only asks the user, a false "read" would bypass them. `QUERY` catches the
+ * `query()` table function.
  */
 export const SQL_WRITE_KEYWORDS = [
   'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'UPSERT', 'CREATE', 'DROP', 'ALTER',
   'TRUNCATE', 'ATTACH', 'DETACH', 'COPY', 'EXPORT', 'IMPORT', 'INSTALL', 'LOAD',
   'FORCE', 'SET', 'RESET', 'CALL', 'EXECUTE', 'PREPARE', 'DEALLOCATE', 'VACUUM',
   'CHECKPOINT', 'BEGIN', 'COMMIT', 'ROLLBACK', 'ABORT', 'GRANT', 'REVOKE', 'USE',
-  'INTO', 'QUERY',
+  'INTO', 'QUERY', 'NEXTVAL', 'SETSEED',
 ] as const;
 
-/** Statements that only read. */
+/**
+ * Statements that only read. Not `PIVOT`: without an `IN` list DuckDB runs it
+ * as a `CREATE TYPE` for the pivot values first.
+ */
 const READ_STATEMENTS = [
   'SELECT', 'WITH', 'FROM', 'VALUES', 'TABLE', 'DESCRIBE', 'DESC', 'SHOW',
   'SUMMARIZE', 'EXPLAIN',
@@ -63,17 +76,46 @@ const READ_PRAGMAS = [
   'metadata_info',
 ] as const;
 
+// The lexical units of a statement, as DuckDB splits them. Anything this does
+// not recognise (a backslash, a `$`, an unterminated quote, a nested comment)
+// makes the statement fail to match, so it is an effect.
+/** A string literal, `''` escaping a quote. No backslash: in an `E'…'` string it escapes. */
+const SQL_STRING = "'(?:[^'\\\\]|'')*'";
+/** A quoted identifier, `""` escaping a quote. */
+const SQL_QUOTED_ID = '"(?:[^"]|"")*"';
 /**
- * One read-only SQL statement, optionally ending in `;`: a read statement or a
- * reporting PRAGMA, no other `;` (so no second statement), and no write
- * keyword anywhere.
+ * A line comment, which (as in DuckDB's Postgres lexer) ends at `\n` or `\r`.
+ * It must run to that end: a shorter match would let the rest of the line
+ * open a string that hides the code after it.
+ */
+const SQL_LINE_COMMENT = '--[^\\n\\r]*(?![^\\n\\r])';
+/** A block comment with no `/*` inside it (DuckDB may nest them; this never does). */
+const SQL_BLOCK_COMMENT = '/\\*(?:[^*/]|\\*(?!/)|/(?!\\*))*\\*/';
+/** A whole bare word (identifier, keyword or number) that is not a write keyword. */
+const SQL_WORD =
+  `${NOT_WORD_BEFORE}(?!(?:${SQL_WRITE_KEYWORDS.join('|')})${NOT_WORD_AFTER})` +
+  `[A-Za-z0-9_]+${NOT_WORD_AFTER}`;
+/** Any other character but `;`, a quote, `$` or a backslash; `-` and `/` when they open no comment. */
+const SQL_OTHER = '[^;\'"A-Za-z0-9_$\\\\/-]|-(?!-)|/(?!\\*)';
+const SQL_GAP = `(?:${WS}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT})`;
+const SQL_UNIT = `(?:${SQL_STRING}|${SQL_QUOTED_ID}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT}|${SQL_WORD}|${SQL_OTHER})`;
+/** As `SQL_UNIT`, without `=` or parentheses: a reporting PRAGMA's argument list. */
+const SQL_PRAGMA_ARG_UNIT =
+  `(?:${SQL_STRING}|${SQL_QUOTED_ID}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT}|${SQL_WORD}|` +
+  '[^;\'"A-Za-z0-9_$\\\\/=()-]|-(?!-)|/(?!\\*))';
+
+/**
+ * One read-only SQL statement: leading whitespace and comments, then a read
+ * statement or a reporting PRAGMA, no `;` outside a string, quoted identifier
+ * or comment except one at the end (followed only by whitespace and
+ * comments), and no write keyword as a bare word.
  */
 export const READ_ONLY_SQL_PATTERN =
-  `(?!.*${NOT_WORD_BEFORE}(?:${SQL_WRITE_KEYWORDS.join('|')})${NOT_WORD_AFTER})` +
-  `${WS}*(?:` +
-  `(?:${READ_STATEMENTS.join('|')})${NOT_WORD_AFTER}[^;]*` +
-  `|PRAGMA${WS}+(?:${READ_PRAGMAS.join('|')})${NOT_WORD_AFTER}${WS}*(?:\\([^;=]*\\))?${WS}*` +
-  `);?${WS}*`;
+  `${SQL_GAP}*(?:` +
+  `(?:${READ_STATEMENTS.join('|')})${NOT_WORD_AFTER}${SQL_UNIT}*` +
+  `|PRAGMA${SQL_GAP}+(?:${READ_PRAGMAS.join('|')})${NOT_WORD_AFTER}${SQL_GAP}*` +
+  `(?:\\(${SQL_PRAGMA_ARG_UNIT}*\\))?${SQL_GAP}*` +
+  `)(?:;${SQL_GAP}*)?`;
 
 const READ_ONLY_SQL_RE = new RegExp(`^(?:${READ_ONLY_SQL_PATTERN})$`, 'is');
 
@@ -107,16 +149,51 @@ export function classifyToolCall(
   const entry = table[name];
   if (entry === undefined) return 'effect';
   if (typeof entry === 'string') return entry;
-  if (!args) return 'effect';
+  return argsMatch(entry.read_if, args) ? 'read' : 'effect';
+}
+
+/** A rule as `open_chat(trusted_results=…)` takes it: args exactly these, each fully matching. */
+export type TrustedResultRule = Record<string, string>;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+}
+
+/**
+ * Results the app authored, delivered on ring 2. Only `CallSkill` with one of
+ * the bundled skill names: its result is a reference card shipped with the
+ * app (or, for a name that matches only case-insensitively, the app's own
+ * "Unknown skill" error). Anything a tool fetched from data, files, code or
+ * the network stays on ring 3.
+ */
+export const ZEOS_TRUSTED_RESULTS: Readonly<Record<string, TrustedResultRule>> = {
+  CallSkill: { skill: `(?:${CALL_SKILL_NAMES.map(escapeRegExp).join('|')})` },
+};
+
+function argsMatch(rule: Readonly<Record<string, string>>, args: Record<string, unknown> | undefined): boolean {
+  if (!args) return false;
   const keys = Object.keys(args).sort();
-  const params = Object.keys(entry.read_if).sort();
-  if (keys.length !== params.length || keys.some((k, i) => k !== params[i])) return 'effect';
-  for (const [param, pattern] of Object.entries(entry.read_if)) {
+  const params = Object.keys(rule).sort();
+  if (keys.length !== params.length || keys.some((k, i) => k !== params[i])) return false;
+  for (const [param, pattern] of Object.entries(rule)) {
     const value = args[param];
-    if (typeof value !== 'string') return 'effect';
-    if (!new RegExp(`^(?:${pattern})$`, 'is').test(value)) return 'effect';
+    if (typeof value !== 'string') return false;
+    if (!new RegExp(`^(?:${pattern})$`, 'is').test(value)) return false;
   }
-  return 'read';
+  return true;
+}
+
+/**
+ * Whether a call's result arrives on ring 2, by the rule the machine applies
+ * (`ChatToolMachine.results_pipe` in ZEOS chat_machine.py).
+ */
+export function isTrustedToolResult(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  table: Readonly<Record<string, TrustedResultRule>> = ZEOS_TRUSTED_RESULTS,
+): boolean {
+  const rule = table[name];
+  return rule !== undefined && argsMatch(rule, args);
 }
 
 /** Tools this model does not get in v1. */

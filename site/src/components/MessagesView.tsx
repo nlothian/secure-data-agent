@@ -16,7 +16,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
 } from './Icons';
-import { RingBadge } from './ZeosPanels';
+import { RingBadge, SpoofBadge } from './ZeosPanels';
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
@@ -105,12 +105,15 @@ export function CollapsibleToolCall({
   args,
   result,
   ring,
+  spoofed = false,
 }: {
   name: string;
   args: string;
   result: string | null;
   /** ZEOS Qwen: the ring the result arrived on. */
   ring?: number;
+  /** ZEOS Qwen: the kernel raised a spoof alarm on the result. */
+  spoofed?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -124,6 +127,7 @@ export function CollapsibleToolCall({
       >
         <ChevronRightIcon size={14} />
         <span className="chat-tool-name">{name}</span>
+        {spoofed && result !== null && <SpoofBadge />}
         {ring !== undefined && result !== null && <RingBadge ring={ring} />}
       </button>
       {expanded && (
@@ -232,9 +236,11 @@ export function CollapsibleElidedReasoning() {
 function AssistantBody({
   content,
   toolRings,
+  toolSpoofs,
 }: {
   content: string;
   toolRings?: readonly number[];
+  toolSpoofs?: readonly number[];
 }) {
   const segments = useMemo<AssistantSegment[]>(
     () => parseAssistantContent(content),
@@ -263,14 +269,15 @@ function AssistantBody({
         if (seg.kind === 'compacted') {
           return <CollapsibleElidedReasoning key={i} />;
         }
-        const ring = toolRings?.[toolIndex++];
+        const index = toolIndex++;
         return (
           <CollapsibleToolCall
             key={i}
             name={seg.name}
             args={seg.args}
             result={seg.result}
-            ring={ring}
+            ring={toolRings?.[index]}
+            spoofed={toolSpoofs?.includes(index) ?? false}
           />
         );
       })}
@@ -287,7 +294,11 @@ function renderMessageBody(
   if (m.role === 'assistant' && !m.error) {
     return (
       <>
-        <AssistantBody content={m.content} toolRings={m.trust?.toolRings} />
+        <AssistantBody
+          content={m.content}
+          toolRings={m.trust?.toolRings}
+          toolSpoofs={m.trust?.toolSpoofs}
+        />
         {m.maxIterationsReached && onContinue && (
           <button
             type="button"

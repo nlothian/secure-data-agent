@@ -259,7 +259,7 @@ export function importHistoryForQwen(
       callsInTurn++;
       if (seg.resultJson !== null) {
         flush(false);
-        out.push({ role: 'tool', toolName: seg.name, content: seg.resultJson });
+        out.push({ role: 'tool', toolName: seg.name, toolArgsJson: seg.argsJson, content: seg.resultJson });
       }
     }
     // Keep an (empty) assistant turn for a message that had no content at

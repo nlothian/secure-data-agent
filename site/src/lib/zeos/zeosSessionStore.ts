@@ -18,6 +18,14 @@ export interface ZeosApproval {
   effectiveIntegrity: number | null;
 }
 
+/** The kernel's spoof alarm: a delivery that spelled a kernel frame (inert data). */
+export interface ZeosSpoof {
+  pipe: string | null;
+  detail: string;
+  /** e.g. "ReadLines result #2", when it was a tool result. */
+  label: string | null;
+}
+
 export interface ZeosSnapshot {
   /** The gate mode of the open conversation (or the configured one before it opens). */
   gateMode: 'strict' | 'attention';
@@ -33,6 +41,8 @@ export interface ZeosSnapshot {
   pending: ZeosApproval | null;
   /** Journal lines (JSON), newest last, capped. */
   journal: string[];
+  /** Spoof alarms in this conversation, oldest first. */
+  spoofs: ZeosSpoof[];
 }
 
 const JOURNAL_CAP = 2000;
@@ -48,6 +58,7 @@ const INITIAL: ZeosSnapshot = {
   demotedBy: null,
   pending: null,
   journal: [],
+  spoofs: [],
 };
 
 let snapshot: ZeosSnapshot = INITIAL;
@@ -91,7 +102,16 @@ export function setTrust(
 /** A new conversation: forget the old one's trust and journal. */
 export function resetConversation(): void {
   cancelApproval();
-  set({ integrity: null, sessionFloor: null, demotedBy: null, journal: [] });
+  set({ integrity: null, sessionFloor: null, demotedBy: null, journal: [], spoofs: [] });
+}
+
+/**
+ * Record a spoof alarm, and add it to the journal as a `ui.spoof` line (the
+ * kernel's own `fault.raised` line does not say which tool result it was).
+ */
+export function noteSpoof(spoof: ZeosSpoof): void {
+  set({ spoofs: [...snapshot.spoofs, spoof] });
+  appendJournal([JSON.stringify({ kind: 'ui.spoof', ...spoof })]);
 }
 
 export function appendJournal(lines: readonly string[]): void {

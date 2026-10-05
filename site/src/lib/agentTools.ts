@@ -112,6 +112,8 @@ const SKILLS = [
 }[];
 
 export type CallSkillName = (typeof SKILLS)[number]['name'];
+/** Every bundled skill card's name, in SKILLS order. */
+export const CALL_SKILL_NAMES: readonly CallSkillName[] = SKILLS.map((s) => s.name);
 export type CallSkillInput = { skill: CallSkillName };
 export type CallSkillResult = string | ToolError;
 
@@ -265,14 +267,17 @@ function oxford(items: string[]): string {
 function renderPromptTemplate(
   md: string,
   features: AgentPromptFeatures,
+  options: AgentPromptOptions = {},
 ): string {
   if (!md.includes('{{')) return md;
-  const exec = EXEC_TOOLS.filter((e) => !!features[e.key]);
+  const enabled = EXEC_TOOLS.filter((e) => !!features[e.key]);
+  // With inline SQL, RunSQL is not one of the tools that run a file.
+  const exec = enabled.filter((e) => !(options.inlineSql && e.key === 'runSql'));
   const names = exec.map((e) => `\`${e.tool}\``);
   const exts = exec.map((e) => e.ext);
   // RunReact can't produce data — only RunPython/RunSQL can. The React
   // prompt's "compute the values first" hint must list only those.
-  const dataNames = exec
+  const dataNames = enabled
     .filter((e) => e.key !== 'runReact')
     .map((e) => `\`${e.tool}\``);
   const subs: Record<string, string> = {
@@ -289,9 +294,13 @@ function renderPromptTemplate(
           ' / ',
         )} first and paste them in)`
       : '',
+    '{{INLINE_SQL_NOTE}}':
+      options.inlineSql && features.runSql
+        ? ' `RunSQL` is the exception: it takes its query inline as `sql` (see "SQL queries").'
+        : '',
   };
   return md.replace(
-    /\{\{RUN_TOOLS_SLASHED\}\}|\{\{RUN_TOOLS\}\}|\{\{SCRATCHPAD_GLOB\}\}|\{\{SCRATCH_EXT\}\}|\{\{REACT_DATA_HINT\}\}/g,
+    /\{\{RUN_TOOLS_SLASHED\}\}|\{\{RUN_TOOLS\}\}|\{\{SCRATCHPAD_GLOB\}\}|\{\{SCRATCH_EXT\}\}|\{\{REACT_DATA_HINT\}\}|\{\{INLINE_SQL_NOTE\}\}/g,
     (m) => subs[m] ?? m,
   );
 }
@@ -1473,17 +1482,32 @@ export function buildAgentTools(
   );
 }
 
+/** A variant of the agent prompt, for a model whose tools differ (ZEOS Qwen 4B). */
+export interface AgentPromptOptions {
+  /** RunSQL takes its query inline as `sql`, not by `path`. */
+  inlineSql?: boolean;
+  /** A tool's prompt section in place of its own `promptMd`, by tool name. */
+  toolPrompts?: Readonly<Record<string, string>>;
+}
+
 export function buildAgentSystemPrompt(
   features: AgentPromptFeatures = DEFAULT_FEATURES,
+  options: AgentPromptOptions = {},
 ): string {
+  const overrides = options.toolPrompts ?? {};
+  for (const name of Object.keys(overrides)) {
+    if (!TOOL_LIST.some((t) => t.name === name && t.promptMd)) {
+      throw new Error(`buildAgentSystemPrompt: no tool ${JSON.stringify(name)} has a prompt section to replace.`);
+    }
+  }
   const parts: string[] = [baseMd, renderCallSkillSection(features)];
   for (const t of TOOL_LIST) {
     if (!t.promptMd) continue;
     if (t.featureKey != null && !features[t.featureKey]) continue;
-    parts.push(t.promptMd);
+    parts.push(overrides[t.name] ?? t.promptMd);
   }
   return parts
-    .map((s) => renderPromptTemplate(s, features).trim())
+    .map((s) => renderPromptTemplate(s, features, options).trim())
     .filter((s) => s.length > 0)
     .join('\n\n');
 }

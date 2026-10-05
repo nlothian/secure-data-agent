@@ -15,7 +15,11 @@
  * A turn: `send_user`, then step the kernel in small batches so tokens reach
  * the UI as the model decodes them. A `tool_call` event (the machine put the
  * call on `tools.read` or `tools.effect`) is drained, run with
- * `runAgentTool`, clamped and delivered on `tools.results` (ring 3). An
+ * `runAgentTool`, clamped and delivered on `tools.results` (ring 3), or on
+ * `tools.results.trusted` (ring 2) for a result the app wrote itself
+ * (`ZEOS_TRUSTED_RESULTS`: a bundled skill card). A `spoof` event (the
+ * kernel's alarm on a result spelling a kernel frame) marks that result in
+ * the chat (`ChatTrust.toolSpoofs`) and the journal. An
  * `approval_required` event (the kernel refused a write to `tools.effect` for
  * privilege) shows the approval card: Approve runs the call under the user's
  * authority and delivers its result, Deny delivers a refusal. The turn ends
@@ -55,10 +59,16 @@ import {
   type ZeosEvent,
   type ZeosSegment,
 } from './zeosChatEngine';
-import { buildZeosImport, EXTERNAL, toolResultForZeos, TRUSTED } from './zeosHistory';
+import { buildZeosImport, EXTERNAL, toolResultForZeos, TRUSTED, userTextForZeos } from './zeosHistory';
 import * as store from './zeosSessionStore';
 import { dispatchForZeos, zeosSystemPrompt } from './zeosPrompt';
-import { paramTypesFromTools, ZEOS_TOOL_CLASSES, zeosAgentTools } from './zeosToolClasses';
+import {
+  isTrustedToolResult,
+  paramTypesFromTools,
+  ZEOS_TOOL_CLASSES,
+  ZEOS_TRUSTED_RESULTS,
+  zeosAgentTools,
+} from './zeosToolClasses';
 
 /** Kernel ticks per `step` call: small, so tokens stream. */
 const STEP_TICKS = 8;
@@ -112,6 +122,10 @@ const MAX_TOOL_CALLS = 10;
 /** What the model reads when the user declines (ZEOS `DEFAULT_REFUSAL`). */
 export const ZEOS_REFUSAL = 'The user declined this tool call. It was not run.';
 const THINKING_OPEN_MARKER = `${CHANNEL_OPEN}thought\n`;
+/** The pipes a tool result arrives on (ZEOS `ChatPipes.result_pipes`). */
+export const RESULTS_PIPE = 'tools.results';
+export const TRUSTED_RESULTS_PIPE = 'tools.results.trusted';
+const isResultPipe = (pipe: string | null): boolean => pipe === RESULTS_PIPE || pipe === TRUSTED_RESULTS_PIPE;
 
 // ---- engine and session ------------------------------------------------------
 
@@ -355,11 +369,14 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   const key = conversationKey(system, thinking, gateMode, prior);
 
   const toolRings: number[] = [];
+  /** Indices into `toolRings` of results the kernel raised a spoof alarm on. */
+  const toolSpoofs: number[] = [];
   const reportTrust = (s: Session): void => {
     const trust: ChatTrust = {
       integrity: s.integrity,
       ring: s.integrity,
       toolRings: [...toolRings],
+      ...(toolSpoofs.length > 0 ? { toolSpoofs: [...toolSpoofs] } : {}),
       ...(s.demotedBy ? { demotedBy: s.demotedBy } : {}),
     };
     opts.onTrust?.(trust);
@@ -379,9 +396,10 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       store.setTrust({ gateMode });
       const seed = runSeed();
       const run = await eng.open({
-        systemPrompt: renderQwenSystemContent(zeosSystemPrompt(system), tools),
+        systemPrompt: renderQwenSystemContent(zeosSystemPrompt(system, features), tools),
         gateMode,
         toolClasses: ZEOS_TOOL_CLASSES,
+        trustedResults: ZEOS_TRUSTED_RESULTS,
         paramTypes: paramTypesFromTools(tools),
         thinking,
         sampling: sampling(),
@@ -396,7 +414,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         // Each tools.results arrival is the next imported tool turn.
         const toolTurns = imported.filter((t) => t.role === 'tool');
         for (const e of events) {
-          if (e.type === 'arrived' && e.pipe === 'tools.results') {
+          if (e.type === 'arrived' && isResultPipe(e.pipe)) {
             const t = toolTurns[s.toolCount];
             s.toolCount += 1;
             s.segments.set(e.segment, `${t?.toolName ?? 'tool'} result #${s.toolCount}`);
@@ -409,12 +427,14 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     const s = session!;
 
     const turnStart = performance.now();
-    await s.run.sendUser(last.content);
+    await s.run.sendUser(userTextForZeos(last.content));
     const text = new ZeosTurnText(fmt, thinking, emit, emitHistory);
     let calls = 0;
     let sessionFloor: number | null = null;
     /** What the next tools.results arrival is, for "Demoted by …". */
     let pendingResultLabel: string | null = null;
+    /** What the latest arrival was, for a spoof alarm on it. */
+    let lastResultLabel: string | null = null;
 
     const runCall = async (
       name: string,
@@ -428,7 +448,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       text.toolExchange(name, argsJson, resultStr);
       s.toolCount += 1;
       pendingResultLabel = `${name} result #${s.toolCount}`;
-      await s.run.deliverToolResult(toolResultForZeos(resultStr));
+      await s.run.deliverToolResult(toolResultForZeos(resultStr), isTrustedToolResult(name, args));
     };
 
     for (;;) {
@@ -448,11 +468,15 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
           }
           case 'arrived':
             // The kernel's rule: a read sets the floor to the pipe's ring, except
-            // that in attention mode tool results and history do not set it.
-            if (e.pipe === 'chat.user' || gateMode === 'strict') sessionFloor = e.ring;
-            if (e.pipe === 'tools.results') {
+            // that in attention mode tool results and history do not set it, and
+            // a trusted result (declared `session_floor: false`) never does.
+            if (e.pipe === 'chat.user' || (gateMode === 'strict' && e.pipe !== TRUSTED_RESULTS_PIPE)) {
+              sessionFloor = e.ring;
+            }
+            if (isResultPipe(e.pipe)) {
               toolRings.push(e.ring);
               if (pendingResultLabel) s.segments.set(e.segment, pendingResultLabel);
+              lastResultLabel = pendingResultLabel;
               pendingResultLabel = null;
               changed = true;
             }
@@ -523,6 +547,17 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             text.finish();
             break;
           case 'spoof':
+            // The kernel alarms right after the read, so it is about the latest result.
+            console.warn('[zeos] spoof:', e);
+            if (isResultPipe(e.pipe) && toolRings.length > 0) {
+              const index = toolRings.length - 1;
+              if (!toolSpoofs.includes(index)) toolSpoofs.push(index);
+              store.noteSpoof({ pipe: e.pipe, detail: e.detail, label: lastResultLabel });
+              changed = true;
+            } else {
+              store.noteSpoof({ pipe: e.pipe, detail: e.detail, label: null });
+            }
+            break;
           case 'fault':
             console.warn(`[zeos] ${e.type}:`, e);
             break;

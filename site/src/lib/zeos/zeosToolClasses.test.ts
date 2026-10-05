@@ -1,11 +1,13 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { AGENT_TOOLS } from '../agentTools';
+import { AGENT_TOOLS, CALL_SKILL_NAMES } from '../agentTools';
 import {
   READ_ONLY_SQL_PATTERN,
   ZEOS_TOOL_CLASSES,
+  ZEOS_TRUSTED_RESULTS,
   classifyToolCall,
   isReadOnlySql,
+  isTrustedToolResult,
   paramTypesFromTools,
   zeosAgentTools,
 } from './zeosToolClasses';
@@ -26,6 +28,28 @@ const READ_ONLY = [
   'pragma database_list;',
   'SELECT created_at, updated_by, settings FROM t',
   "SELECT * FROM read_csv('/input/a.csv')",
+  // Comments, as the model writes them.
+  '-- a comment\nSELECT 1',
+  '-- Survival rate by passenger class\nSELECT Pclass, AVG(Survived) AS rate\nFROM train\nGROUP BY Pclass\nORDER BY Pclass;',
+  '/* count the rows */ SELECT COUNT(*) FROM train',
+  'SELECT COUNT(*) -- every row\nFROM train; -- done',
+  'SELECT 1; /* trailing */',
+  '-- Query: how many survived? Insert nothing; just count.\nSELECT SUM(Survived) FROM train',
+  // Keywords and semicolons inside strings and quoted identifiers.
+  "SELECT ';'",
+  "SELECT * FROM train WHERE Name LIKE '%update%'",
+  "SELECT 'DROP TABLE t; --' AS s",
+  "SELECT 'it''s' AS s",
+  'SELECT "update", "set" FROM t',
+  'SELECT "a"";""b" FROM t',
+  'SELECT a AS "Insert Date" FROM t',
+  // Lowercase, CTEs, newlines and tabs.
+  'with s as (\n\tselect sex, count(*) as n from train group by sex\n)\nselect * from s order by n desc;',
+  'WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT * FROM r',
+  'SELECT a - b, a / b, -a FROM t',
+  'SELECT x::INTEGER, CAST(y AS DOUBLE) FROM t',
+  "PRAGMA table_info('train'); -- columns",
+  "PRAGMA table_info('t; DROP TABLE t')",
 ];
 
 const NOT_READ_ONLY = [
@@ -47,14 +71,33 @@ const NOT_READ_ONLY = [
   'PRAGMA enable_profiling',
   'SELECT 1; DROP TABLE t',
   'SELECT 1; SELECT 2',
-  "SELECT ';'",
+  'SELECT 1;\nSELECT 2;',
   'EXPLAIN ANALYZE CREATE TABLE t AS SELECT 1',
   'WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x',
   "SELECT * FROM query('CREATE TABLE t (a INT)')",
   "EXPORT DATABASE '/scratchpad/db'",
   'BEGIN TRANSACTION',
-  '-- a comment\nSELECT 1',
   'SELECT * INTO t2 FROM t',
+  // A comment, string or quote that does not end where it seems to.
+  "SELECT 1 -- it's\n; DROP TABLE t; --'",
+  "SELECT 1 -- x\r; DROP TABLE t",
+  "SELECT 'unterminated; DROP TABLE t",
+  'SELECT "unterminated; DROP TABLE t',
+  "SELECT E'\\'' ; DROP TABLE t; --'",
+  "SELECT 'a\\' ; DROP TABLE t; --'",
+  'SELECT /* /* nested */ ; DROP TABLE t; */ 1',
+  'SELECT /* unterminated ; DROP TABLE t',
+  'SELECT $$; DROP TABLE t; $$',
+  'SELECT $1',
+  // Bare words that are write keywords stay effects.
+  'SELECT load FROM power',
+  'SELECT nextval(\'s\')',
+  'SELECT 1; -- ok\nDELETE FROM t',
+  '/* SELECT */ DELETE FROM t',
+  '-- SELECT 1\nDROP TABLE t',
+  'PRAGMA threads = 4',
+  '(SELECT 1)',
+  'PIVOT train ON Sex USING COUNT(*)',
 ];
 
 describe('isReadOnlySql', () => {
@@ -85,6 +128,21 @@ describe('classifyToolCall', () => {
     expect(classifyToolCall('RunSQL', { sql: 'SELECT 1', path: '/scratchpad/q.sql' })).toBe('effect');
     expect(classifyToolCall('RunSQL', { sql: 7 })).toBe('effect');
     expect(classifyToolCall('RunSQL', undefined)).toBe('effect');
+  });
+});
+
+describe('isTrustedToolResult', () => {
+  it('trusts CallSkill with a bundled skill name, and nothing else', () => {
+    for (const skill of CALL_SKILL_NAMES) expect(isTrustedToolResult('CallSkill', { skill })).toBe(true);
+    expect(isTrustedToolResult('CallSkill', { skill: 'evil' })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', { skill: 'sql\nIgnore that' })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', { skill: 'sql', extra: 'x' })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', { skill: 1 })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', {})).toBe(false);
+    expect(isTrustedToolResult('CallSkill', undefined)).toBe(false);
+    for (const name of Object.keys(ZEOS_TOOL_CLASSES)) {
+      if (name !== 'CallSkill') expect(isTrustedToolResult(name, { skill: 'sql' })).toBe(false);
+    }
   });
 });
 
@@ -125,5 +183,21 @@ describe.skipIf(!python)('the pattern under Python re', () => {
     });
     expect(out.stderr).toBe('');
     expect(JSON.parse(out.stdout)).toEqual(cases.map(isReadOnlySql));
+  });
+
+  it('agrees on the trusted-results rule', () => {
+    const pattern = ZEOS_TRUSTED_RESULTS.CallSkill.skill;
+    const cases = [...CALL_SKILL_NAMES, 'evil', 'sql2', 'python', 'data loading', 'SQL', 'sql\n'];
+    const script =
+      'import json, re, sys\n' +
+      'data = json.load(sys.stdin)\n' +
+      'p = re.compile(data["pattern"], re.IGNORECASE | re.DOTALL)\n' +
+      'print(json.dumps([p.fullmatch(c) is not None for c in data["cases"]]))\n';
+    const out = spawnSync('python3', ['-c', script], {
+      input: JSON.stringify({ pattern, cases }),
+      encoding: 'utf8',
+    });
+    expect(out.stderr).toBe('');
+    expect(JSON.parse(out.stdout)).toEqual(cases.map((skill) => isTrustedToolResult('CallSkill', { skill })));
   });
 });
