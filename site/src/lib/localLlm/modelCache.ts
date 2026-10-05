@@ -9,7 +9,7 @@
  * (which only runs when this returns true) must never kick off a multi-GB
  * download the user did not ask for.
  */
-import { isLocalModelsMode, type LocalGemmaModel } from './models';
+import { isLocalModelsMode, isZeosStubMode, type LocalGemmaModel } from './models';
 import { hasManifest, requiredFiles } from './modelFiles';
 
 /** transformers.js `env.cacheKey` default. */
@@ -41,6 +41,8 @@ async function missingFiles(model: LocalGemmaModel) {
  */
 export async function isModelCached(model: LocalGemmaModel): Promise<boolean> {
   if (isLocalModelsMode()) return true;
+  // Stub mode loads no weights at all.
+  if (model.family === 'zeos-qwen' && isZeosStubMode()) return true;
   // No manifest: we cannot tell, so never claim it is cached.
   if (!hasManifest(model)) return false;
   if (typeof caches === 'undefined') return false;

@@ -53,6 +53,7 @@ function readStorage(): LLMConfig | null {
       apiKeys: parsed.apiKeys,
       models: parsed.models ?? {},
       thinkingEnabled: parsed.thinkingEnabled ?? {},
+      ...(parsed.zeosAttentionOnly === true ? { zeosAttentionOnly: true } : {}),
     };
   } catch {
     return null;
@@ -122,6 +123,7 @@ export interface UseLLMConfigResult {
   setApiKey: (endpointUrl: string, apiKey: string) => void;
   setModel: (endpointUrl: string, model: string) => void;
   setThinkingEnabled: (endpointUrl: string, enabled: boolean) => void;
+  setZeosAttentionOnly: (enabled: boolean) => void;
   addCustomEndpoint: () => string;
   updateCustomEndpoint: (
     id: string,
@@ -285,6 +287,13 @@ export function useLLMConfig(): UseLLMConfigResult {
     });
   }, []);
 
+  const setZeosAttentionOnly = useCallback((enabled: boolean): void => {
+    update((prev) => {
+      const { zeosAttentionOnly: _old, ...rest } = prev;
+      return enabled ? { ...rest, zeosAttentionOnly: true } : rest;
+    });
+  }, []);
+
   return {
     config,
     ready: hydrated,
@@ -292,6 +301,7 @@ export function useLLMConfig(): UseLLMConfigResult {
     setApiKey,
     setModel,
     setThinkingEnabled,
+    setZeosAttentionOnly,
     addCustomEndpoint,
     updateCustomEndpoint,
     removeCustomEndpoint,

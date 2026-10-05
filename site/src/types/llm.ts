@@ -24,6 +24,12 @@ export interface LLMConfig {
   apiKeys: Record<string, string>;
   models: Record<string, string>;
   thinkingEnabled: Record<string, boolean>;
+  /**
+   * ZEOS Qwen 4B: gate side-effecting tools on measured attention only
+   * ("attention" gate mode) instead of on having read any tool output this
+   * turn ("strict", the default). Applies from the next message.
+   */
+  zeosAttentionOnly?: boolean;
 }
 
 export const EMPTY_LLM_CONFIG: LLMConfig = {

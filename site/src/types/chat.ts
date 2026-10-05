@@ -2,6 +2,22 @@ export const CHAT_HISTORY_STORAGE_KEY = 'haw.chat.history.v1';
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
+/**
+ * How far the ZEOS kernel trusted an assistant turn (ZEOS Qwen only). Rings
+ * and integrities are ZEOS's: 0 most trusted, 2 TRUSTED (what the user
+ * types), 3 EXTERNAL (tool output).
+ */
+export interface ChatTrust {
+  /** The job's integrity when the turn ended; the turn is replayed at this ring. */
+  integrity: number;
+  /** The ring the turn's text is replayed on after a reload (`chat.history[.trusted]`). */
+  ring: number;
+  /** The ring each tool result of the turn arrived on, in order (always 3 today). */
+  toolRings?: number[];
+  /** What demoted the job, if anything, e.g. "ReadLines result #3". */
+  demotedBy?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -30,6 +46,8 @@ export interface ChatMessage {
    * that bubble; clicking it submits "Continue" as a new user turn.
    */
   maxIterationsReached?: boolean;
+  /** ZEOS Qwen assistant turns: the kernel's trust in the turn. */
+  trust?: ChatTrust;
 }
 
 export interface ChatHistory {

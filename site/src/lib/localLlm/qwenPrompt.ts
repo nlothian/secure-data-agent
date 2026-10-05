@@ -179,17 +179,8 @@ export function renderConversationForQwen(
   thinkingEnabled: boolean = false,
 ): string {
   let out = '';
-  const system = systemPrompt.trim();
-
-  if (tools.length > 0) {
-    out += `${IM_START}system\n${TOOLS_PREAMBLE}`;
-    for (const tool of tools) out += `\n${formatToolDeclaration(tool)}`;
-    out += `\n</tools>${TOOLS_INSTRUCTIONS}`;
-    if (system) out += `\n\n${system}`;
-    out += `${IM_END}\n`;
-  } else if (system) {
-    out += `${IM_START}system\n${system}${IM_END}\n`;
-  }
+  const systemContent = renderQwenSystemContent(systemPrompt, tools);
+  if (systemContent) out += `${IM_START}system\n${systemContent}${IM_END}\n`;
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -205,6 +196,25 @@ export function renderConversationForQwen(
   }
 
   out += `${IM_START}assistant\n${qwenThinkingPrefix(thinkingEnabled)}`;
+  return out;
+}
+
+/**
+ * The text of the system turn (between `<|im_start|>system\n` and
+ * `<|im_end|>`): the tool declarations and instructions, then the system
+ * prompt. Empty when there is neither. The ZEOS chat uses it as its
+ * descriptor body, which the chat machine frames as the system turn.
+ */
+export function renderQwenSystemContent(
+  systemPrompt: string,
+  tools: readonly AgentToolSpec[] = [],
+): string {
+  const system = systemPrompt.trim();
+  if (tools.length === 0) return system;
+  let out = TOOLS_PREAMBLE;
+  for (const tool of tools) out += `\n${formatToolDeclaration(tool)}`;
+  out += `\n</tools>${TOOLS_INSTRUCTIONS}`;
+  if (system) out += `\n\n${system}`;
   return out;
 }
 

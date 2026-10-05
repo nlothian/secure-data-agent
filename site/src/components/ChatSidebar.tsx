@@ -64,6 +64,8 @@ import {
 import ModelSelector from './ModelSelector';
 import Throbber from './Throbber';
 import MessagesView from './MessagesView';
+import { ZeosApprovalCard, ZeosJournalView, ZeosTrustIndicator } from './ZeosPanels';
+import * as zeosStore from '../lib/zeos/zeosSessionStore';
 
 let hydratePromise: Promise<void> | null = null;
 
@@ -92,6 +94,7 @@ export default function ChatSidebar() {
     appendLastAssistantHistory,
     setLastAssistantContent,
     setLastAssistantMaxIterations,
+    setLastAssistantTrust,
     replaceMessages,
     clear,
     flush,
@@ -103,10 +106,18 @@ export default function ChatSidebar() {
   const [highlightCompactedId, setHighlightCompactedId] = useState<string | null>(
     null,
   );
-  const features = useSyncExternalStore(
+  const storedFeatures = useSyncExternalStore(
     agentFeatures.subscribe,
     agentFeatures.getSnapshot,
     agentFeatures.getServerSnapshot,
+  );
+  // ZEOS Qwen 4B (v1): no sub-agents and no compaction; see streamZeos.
+  const isZeos =
+    isLocalGemmaEndpoint(config.activeEndpoint) &&
+    getLocalGemmaModel(resolveActiveLocalModelIdOrDefault(config))?.family === 'zeos-qwen';
+  const features = useMemo(
+    () => (isZeos ? { ...storedFeatures, runSubAgent: false } : storedFeatures),
+    [isZeos, storedFeatures],
   );
   // The bridge stays registered for the lifetime of ChatSidebar; methods that
   // close over frequently-changing state (like `onNewChat`, which depends on
@@ -207,6 +218,12 @@ export default function ChatSidebar() {
       if (cancelled || !cached) return;
       const run = (): void => {
         if (cancelled) return;
+        if (model.family === 'zeos-qwen') {
+          void import('../lib/zeos/streamZeos')
+            .then(({ warmZeos }) => warmZeos())
+            .catch((err) => console.error('eager ZEOS start failed:', err));
+          return;
+        }
         void import('../lib/localLlm/llmService')
           .then(({ ensureLoaded }) => ensureLoaded(id))
           .catch((err) => console.error('eager model load failed:', err));
@@ -415,6 +432,7 @@ export default function ChatSidebar() {
         onHistoryDelta: (delta) => appendLastAssistantHistory(delta),
         onUsage: (usage) => tokenUsageStore.setTokenUsage(usage),
         onMaxIterationsReached: () => setLastAssistantMaxIterations(),
+        onTrust: (trust) => setLastAssistantTrust(trust),
         onMidStreamCompaction: ({ summary }) => {
           // Insert the marker before the in-flight assistant turn (the tail
           // of history while streaming) so it shows up in the same position
@@ -447,6 +465,9 @@ export default function ChatSidebar() {
           // Defer to the next tick so React has committed the final
           // history updates from the streaming callbacks; otherwise
           // historyRef.current can lag the just-streamed assistant turn.
+          // Auto-compaction is off for ZEOS Qwen: its run holds the whole
+          // conversation, and the kernel's context policy stubs old segments.
+          if (isZeos) return;
           setTimeout(() => {
             void maybeAutoCompact({
               config,
@@ -515,9 +536,11 @@ export default function ChatSidebar() {
       flush,
       history.messages,
       isStreaming,
+      isZeos,
       replaceMessages,
       scrollToTop,
       setLastAssistantContent,
+      setLastAssistantTrust,
       unconfigured,
       updateLastAssistant,
     ],
@@ -614,6 +637,7 @@ export default function ChatSidebar() {
     if (isStreaming) abortRef.current?.abort();
     toolDebugger.reset();
     tokenUsageStore.setTokenUsage(null);
+    zeosStore.resetConversation();
     subAgentStore.clearAll();
     executionPanelStore.clearNonDataPanes();
     executionPanelStore.clearDataError();
@@ -645,6 +669,7 @@ export default function ChatSidebar() {
   const pressureSuffix =
     pressureLevel === 'ok' ? '' : ' chat-pressure-' + pressureLevel;
   const compactDisabled =
+    isZeos ||
     isStreaming ||
     compacting ||
     unconfigured ||
@@ -716,6 +741,13 @@ export default function ChatSidebar() {
             </button>
           </div>
         </header>
+        {isZeos && (
+          <div className="chat-zeos-strip">
+            <ZeosTrustIndicator
+              configuredMode={config.zeosAttentionOnly ? 'attention' : 'strict'}
+            />
+          </div>
+        )}
 
         <MessagesView
           listRef={listRef}
@@ -828,6 +860,9 @@ export default function ChatSidebar() {
               : 'Compaction is recommended.'}
           </div>
         )}
+
+        {isZeos && <ZeosApprovalCard />}
+        {isZeos && <ZeosJournalView />}
 
         <div className="chat-composer">
           <textarea

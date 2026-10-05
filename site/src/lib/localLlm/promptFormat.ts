@@ -197,5 +197,6 @@ export function getPromptFormat(
   family: LocalModelFamily,
   tools: readonly AgentToolSpec[] = [],
 ): PromptFormat {
-  return family === 'qwen' ? qwenFormat(tools) : GEMMA_FORMAT;
+  // ZEOS Qwen speaks Qwen's template; the ZEOS machine frames it kernel-side.
+  return family === 'qwen' || family === 'zeos-qwen' ? qwenFormat(tools) : GEMMA_FORMAT;
 }

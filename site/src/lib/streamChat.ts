@@ -1,4 +1,5 @@
 import { formatErrorBody } from './llm';
+import type { ChatTrust } from '../types/chat';
 import type { LLMConfig } from '../types/llm';
 import { isLocalGemmaEndpoint } from '../types/llm';
 import { runAgentTool, type AgentToolSpec } from './agentTools';
@@ -7,6 +8,8 @@ import { clampToolResultSize } from './toolResultLimits';
 export interface StreamChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** ZEOS Qwen: the recorded trust of a past assistant turn (history import). */
+  trust?: ChatTrust;
 }
 
 export interface TokenUsageReport {
@@ -54,6 +57,8 @@ export interface StreamChatOptions {
    * out. The UI flags the assistant message so it can render a Continue
    * button on that bubble. */
   onMaxIterationsReached?: () => void;
+  /** ZEOS Qwen: the kernel's trust in the streaming assistant turn, as it changes. */
+  onTrust?: (trust: ChatTrust) => void;
 }
 
 const MAX_TOOL_ITERATIONS = 5;
@@ -118,6 +123,13 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
   }
 
   if (isLocalGemmaEndpoint(endpoint)) {
+    const { getLocalGemmaModel, resolveActiveLocalModelIdOrDefault } = await import(
+      './localLlm/models'
+    );
+    if (getLocalGemmaModel(resolveActiveLocalModelIdOrDefault(config))?.family === 'zeos-qwen') {
+      const { streamZeos } = await import('./zeos/streamZeos');
+      return streamZeos(opts);
+    }
     const { streamLocalGemma } = await import('./localLlm/streamLocalGemma');
     return streamLocalGemma(opts);
   }

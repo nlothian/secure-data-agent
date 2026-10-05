@@ -1,0 +1,510 @@
+/**
+ * The agent loop for ZEOS Qwen 4B: the same callback contract as
+ * `streamLocalGemma` (UI text through `onToken`, canonical Gemma history
+ * through `onHistoryDelta`, tool calls run by `runAgentTool`, abort through
+ * `signal`), with the model driven by the ZEOS kernel instead of the
+ * transformers.js worker.
+ *
+ * One ZEOS `ChatRun` holds one conversation and lives across turns. It is
+ * keyed by the conversation it has seen (system prompt, thinking flag, and
+ * every prior message), so the next message of the same chat goes to the same
+ * run, while a new chat, a reload, a retry or an edit opens a fresh run and
+ * replays the stored history into it (`buildZeosImport`, with each turn's
+ * ring). An aborted or failed turn drops the run; the next message replays.
+ *
+ * A turn: `send_user`, then step the kernel in small batches so tokens reach
+ * the UI as the model decodes them. A `tool_call` event (the machine put the
+ * call on `tools.read` or `tools.effect`) is drained, run with
+ * `runAgentTool`, clamped and delivered on `tools.results` (ring 3). An
+ * `approval_required` event (the kernel refused a write to `tools.effect` for
+ * privilege) shows the approval card: Approve runs the call under the user's
+ * authority and delivers its result, Deny delivers a refusal. The turn ends
+ * when the job waits on `chat.user` again.
+ */
+import { getFeatures } from '../agentFeaturesStore';
+import { runAgentTool, type AgentToolSpec } from '../agentTools';
+import { setLlmPreparingToolCall, setStreamingSource } from '../executionPanelStore';
+import { getLocalGemmaModel, resolveActiveLocalModelIdOrDefault } from '../localLlm/models';
+import { getPromptFormat, type ParsedToolCall, type PromptFormat } from '../localLlm/promptFormat';
+import { renderQwenSystemContent } from '../localLlm/qwenPrompt';
+import {
+  createSplitterState,
+  feedSplitter,
+  flushSplitter,
+  type SplitterEvent,
+  type SplitterState,
+} from '../localLlm/thinkingChannelSplitter';
+import {
+  CHANNEL_CLOSE,
+  CHANNEL_OPEN,
+  formatToolCallToken,
+  formatToolResponseToken,
+} from '../localLlm/toolPrompt';
+import { isAbortError, type StreamChatMessage, type StreamChatOptions } from '../streamChat';
+import { clampToolResultSize } from '../toolResultLimits';
+import type { ChatTrust } from '../../types/chat';
+import { LOCAL_GEMMA_ENDPOINT } from '../../types/llm';
+import {
+  startKernelChatEngine,
+  type ZeosChatEngine,
+  type ZeosChatRun,
+  type ZeosGateMode,
+  type ZeosEvent,
+  type ZeosSegment,
+} from './zeosChatEngine';
+import { buildZeosImport, EXTERNAL, toolResultForZeos, TRUSTED } from './zeosHistory';
+import * as store from './zeosSessionStore';
+import { paramTypesFromTools, ZEOS_TOOL_CLASSES, zeosAgentTools } from './zeosToolClasses';
+
+/** Kernel ticks per `step` call: small, so tokens stream. */
+const STEP_TICKS = 8;
+/** Tool calls one turn may make before the loop stops (as streamLocalGemma). */
+const MAX_TOOL_CALLS = 10;
+/** What the model reads when the user declines (ZEOS `DEFAULT_REFUSAL`). */
+export const ZEOS_REFUSAL = 'The user declined this tool call. It was not run.';
+const THINKING_OPEN_MARKER = `${CHANNEL_OPEN}thought\n`;
+
+// ---- engine and session ------------------------------------------------------
+
+let enginePromise: Promise<ZeosChatEngine> | null = null;
+let engineOverride: (() => Promise<ZeosChatEngine>) | null = null;
+
+interface Session {
+  run: ZeosChatRun;
+  key: string;
+  /** Segment id → what it is, for "Demoted by …". */
+  segments: Map<number, string>;
+  /** Tool results so far in the conversation (for "result #n"). */
+  toolCount: number;
+  integrity: number;
+  demotedBy: string | null;
+}
+
+let session: Session | null = null;
+
+function defaultModel() {
+  const m = getLocalGemmaModel('zeos-qwen3.5-4b');
+  if (!m) throw new Error('ZEOS Qwen 4B is not available in this build (local-models dev mode only).');
+  return m;
+}
+
+function engine(): Promise<ZeosChatEngine> {
+  if (!enginePromise) {
+    store.setStatus('starting', 'Starting the ZEOS kernel');
+    const start =
+      engineOverride ??
+      (() =>
+        startKernelChatEngine(defaultModel(), {
+          onStatus: (text) => store.setStatus('starting', text),
+          onProgress: (p) => {
+            const pct = typeof p.percent === 'number' ? ` · ${Math.round(p.percent)}%` : '';
+            store.setStatus('starting', `Loading model${pct}`);
+          },
+        }));
+    enginePromise = start().then(
+      (e) => {
+        store.setStatus('ready', '', { backend: e.backend });
+        return e;
+      },
+      (err: unknown) => {
+        enginePromise = null;
+        store.setStatus('error', err instanceof Error ? err.message : String(err));
+        throw err;
+      },
+    );
+  }
+  return enginePromise;
+}
+
+/** Start the kernel and model thread ahead of the first message (model picker, boot). */
+export async function warmZeos(): Promise<void> {
+  await engine();
+}
+
+async function dropSession(): Promise<void> {
+  const s = session;
+  session = null;
+  if (s) await s.run.close().catch((err) => console.warn('closing the ZEOS run failed:', err));
+}
+
+/** Tests: run against a scripted engine, and forget any session. */
+export async function __setZeosEngineForTests(
+  factory: (() => Promise<ZeosChatEngine>) | null,
+): Promise<void> {
+  await dropSession();
+  engineOverride = factory;
+  enginePromise = null;
+}
+
+/**
+ * What a run was opened for. Anything that changes it -- the past, the system
+ * prompt, thinking, the gate mode -- opens a fresh run and replays history, so
+ * a mode switch mid-chat applies from the next message.
+ */
+function conversationKey(
+  system: string,
+  thinking: boolean,
+  gateMode: ZeosGateMode,
+  turns: readonly StreamChatMessage[],
+): string {
+  return JSON.stringify([system, thinking, gateMode, turns.map((m) => [m.role, m.content])]);
+}
+
+function segmentLabel(seg: Pick<ZeosSegment, 'pipe' | 'segment'>, s: Session): string {
+  const known = s.segments.get(seg.segment);
+  if (known) return known;
+  if (seg.pipe.startsWith('chat.history')) return 'an earlier assistant turn';
+  if (seg.pipe === 'chat.user') return 'a user message';
+  return `${seg.pipe} segment ${seg.segment}`;
+}
+
+// ---- the UI side of one turn ---------------------------------------------------
+
+/**
+ * Turns the model's tokens into the UI's and history's canonical text, as
+ * `streamLocalGemma` does for Qwen: `<think>` → the Gemma thought channel,
+ * tool-call text held back until it parses, then replaced by `→ name(args)` /
+ * `← result` markers in the UI and Gemma tool tokens in history.
+ */
+export class ZeosTurnText {
+  private splitter!: SplitterState;
+  private toolBuffer = '';
+  /** The call the parser closed in the current assistant turn, if any. */
+  parsedCall: ParsedToolCall | null = null;
+
+  constructor(
+    private readonly fmt: PromptFormat,
+    private readonly thinking: boolean,
+    private readonly emit: (ui: string) => void,
+    private readonly emitHistory: (history: string) => void,
+  ) {
+    this.startAssistantTurn();
+  }
+
+  /** Each Qwen assistant turn (the first, and one after every tool response). */
+  startAssistantTurn(): void {
+    const start = this.fmt.turnStart(this.thinking, 0);
+    this.splitter = createSplitterState(start.mode, this.fmt.markers);
+    this.toolBuffer = '';
+    this.parsedCall = null;
+    if (start.mode === 'in-thought') this.emit(THINKING_OPEN_MARKER);
+  }
+
+  token(text: string): void {
+    for (const e of feedSplitter(this.splitter, text)) this.handle(e);
+  }
+
+  private visible(text: string): void {
+    const shown = text.split(this.fmt.markers.close).join('');
+    if (!shown) return;
+    this.emit(shown);
+    this.emitHistory(shown);
+  }
+
+  private handle(e: SplitterEvent): void {
+    if (this.parsedCall) return;
+    if (e.kind === 'open') return this.emit(THINKING_OPEN_MARKER);
+    if (e.kind === 'close') return this.emit(CHANNEL_CLOSE);
+    if (e.kind === 'thought') return this.emit(e.text);
+    this.toolBuffer += e.kind === 'stray-close' ? this.fmt.markers.close : e.text;
+    const parsed = this.fmt.parseStreamForToolCall(this.toolBuffer);
+    if (parsed.emitText) this.visible(parsed.emitText);
+    this.toolBuffer = parsed.rest;
+    if (parsed.toolCall) {
+      this.parsedCall = parsed.toolCall;
+      setLlmPreparingToolCall(null);
+    } else {
+      setLlmPreparingToolCall(this.fmt.extractPreparingToolCall(this.toolBuffer));
+      const streaming = this.fmt.extractStreamingCode(this.toolBuffer);
+      if (streaming) setStreamingSource(streaming.kind, streaming.source);
+    }
+  }
+
+  /** The machine wrote (or tried to write) a call: whatever is held back was its text. */
+  callClosed(): void {
+    for (const e of flushSplitter(this.splitter)) this.handle(e);
+    this.toolBuffer = '';
+    setLlmPreparingToolCall(null);
+  }
+
+  /** A call and its result, in both canonical forms; then the next assistant turn. */
+  toolExchange(name: string, argsJson: string, resultStr: string): void {
+    this.emitHistory(formatToolCallToken(name, argsJson));
+    this.emit(`\n\n→ ${name}(${argsJson || '{}'})\n`);
+    this.emit(`← ${resultStr}\n\n`);
+    this.emitHistory(formatToolResponseToken(name, resultStr));
+    this.startAssistantTurn();
+  }
+
+  /** The turn ended in a reply: release anything held back as text. */
+  finish(): void {
+    for (const e of flushSplitter(this.splitter)) this.handle(e);
+    if (!this.parsedCall && this.toolBuffer) {
+      this.visible(this.toolBuffer);
+      this.toolBuffer = '';
+    }
+  }
+}
+
+/** Why the kernel refused, prefixed with the gate mode so the two read side by side. */
+export function refusalReason(
+  e: Pick<Extract<ZeosEvent, { type: 'approval_required' }>, 'integrity' | 'session_floor' | 'name' | 'fault' | 'detail'>,
+  gateMode: ZeosGateMode,
+  demotedBy: string | null,
+): string {
+  if (e.integrity >= EXTERNAL) {
+    return `${gateMode}: demoted${demotedBy ? ` by ${demotedBy}` : ''}, so ${e.name} needs your approval.`;
+  }
+  if ((e.session_floor ?? TRUSTED) >= EXTERNAL) {
+    return `${gateMode}: read tool output this turn, so ${e.name} needs your approval.`;
+  }
+  return `${gateMode}: the kernel refused ${e.name} (${e.fault}: ${e.detail}).`;
+}
+
+// ---- the loop ----------------------------------------------------------------------
+
+export async function streamZeos(opts: StreamChatOptions): Promise<void> {
+  const { config, messages, signal, onToken, onHistoryDelta, onDone, onError, onUsage } = opts;
+  const thinking = config.thinkingEnabled?.[LOCAL_GEMMA_ENDPOINT] ?? false;
+  const gateMode: ZeosGateMode = config.zeosAttentionOnly ? 'attention' : 'strict';
+  const tools: AgentToolSpec[] = zeosAgentTools(opts.tools ?? []);
+  const features = { ...getFeatures(), runSubAgent: false };
+  const dispatch =
+    opts.toolDispatcher ?? ((name: string, input: unknown, sig?: AbortSignal) => runAgentTool(name, input, sig, features));
+  const fmt = getPromptFormat('zeos-qwen', tools);
+
+  let accumulated = '';
+  const emit = (delta: string): void => {
+    if (!delta) return;
+    accumulated += delta;
+    onToken(delta);
+  };
+  let history = '';
+  const emitHistory = (delta: string): void => {
+    if (!delta) return;
+    history += delta;
+    onHistoryDelta?.(delta);
+  };
+
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .join('\n\n')
+    .trim();
+  const turns = messages.filter((m) => m.role !== 'system');
+  const last = turns[turns.length - 1];
+  if (!last || last.role !== 'user') {
+    onError(new Error('streamZeos: the conversation must end with a user message.'));
+    return;
+  }
+  const prior = turns.slice(0, -1);
+  const key = conversationKey(system, thinking, gateMode, prior);
+
+  const toolRings: number[] = [];
+  const reportTrust = (s: Session): void => {
+    const trust: ChatTrust = {
+      integrity: s.integrity,
+      ring: s.integrity,
+      toolRings: [...toolRings],
+      ...(s.demotedBy ? { demotedBy: s.demotedBy } : {}),
+    };
+    opts.onTrust?.(trust);
+  };
+
+  let outputTokens = 0;
+  let firstTokenAt: number | null = null;
+  let lastTokenAt = 0;
+
+  try {
+    const eng = await engine();
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    if (!session || session.key !== key) {
+      await dropSession();
+      store.resetConversation();
+      store.setTrust({ gateMode });
+      const run = await eng.open({
+        systemPrompt: renderQwenSystemContent(system, tools),
+        gateMode,
+        toolClasses: ZEOS_TOOL_CLASSES,
+        paramTypes: paramTypesFromTools(tools),
+        thinking,
+      });
+      const s: Session = { run, key, segments: new Map(), toolCount: 0, integrity: TRUSTED, demotedBy: null };
+      session = s;
+      const imported = buildZeosImport(prior);
+      if (imported.length > 0) {
+        const events = await run.importHistory(imported);
+        // Each tools.results arrival is the next imported tool turn.
+        const toolTurns = imported.filter((t) => t.role === 'tool');
+        for (const e of events) {
+          if (e.type === 'arrived' && e.pipe === 'tools.results') {
+            const t = toolTurns[s.toolCount];
+            s.toolCount += 1;
+            s.segments.set(e.segment, `${t?.toolName ?? 'tool'} result #${s.toolCount}`);
+          }
+        }
+      }
+      if (import.meta.env.DEV) store.appendJournal(await run.journalLines());
+      store.setTrust({ integrity: s.integrity, sessionFloor: null, demotedBy: null });
+    }
+    const s = session!;
+
+    await s.run.sendUser(last.content);
+    const text = new ZeosTurnText(fmt, thinking, emit, emitHistory);
+    let calls = 0;
+    let sessionFloor: number | null = null;
+    /** What the next tools.results arrival is, for "Demoted by …". */
+    let pendingResultLabel: string | null = null;
+
+    const runCall = async (name: string, args: Record<string, unknown>): Promise<void> => {
+      const argsJson = JSON.stringify(args);
+      const result = await dispatch(name, args, signal);
+      const resultStr = clampToolResultSize(name, JSON.stringify(result));
+      text.toolExchange(name, argsJson, resultStr);
+      s.toolCount += 1;
+      pendingResultLabel = `${name} result #${s.toolCount}`;
+      await s.run.deliverToolResult(toolResultForZeos(resultStr));
+    };
+
+    for (;;) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      const events = await s.run.step(STEP_TICKS);
+      let changed = false;
+      for (const e of events) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        switch (e.type) {
+          case 'token': {
+            const now = performance.now();
+            if (firstTokenAt === null) firstTokenAt = now;
+            lastTokenAt = now;
+            outputTokens += 1;
+            text.token(e.text);
+            break;
+          }
+          case 'arrived':
+            // The kernel's rule: a read sets the floor to the pipe's ring, except
+            // that in attention mode tool results and history do not set it.
+            if (e.pipe === 'chat.user' || gateMode === 'strict') sessionFloor = e.ring;
+            if (e.pipe === 'tools.results') {
+              toolRings.push(e.ring);
+              if (pendingResultLabel) s.segments.set(e.segment, pendingResultLabel);
+              pendingResultLabel = null;
+              changed = true;
+            }
+            break;
+          case 'demoted':
+            s.integrity = e.to_integrity;
+            s.demotedBy = e.because.map((seg) => segmentLabel(seg, s)).join(', ') || null;
+            changed = true;
+            break;
+          case 'tool_call': {
+            text.callClosed();
+            await s.run.drain(e.sink);
+            if (++calls > MAX_TOOL_CALLS) {
+              emit('\n\nReached max tool iterations');
+              opts.onMaxIterationsReached?.();
+              await dropSession();
+              onDone(accumulated);
+              return;
+            }
+            await runCall(e.name, e.arguments);
+            break;
+          }
+          case 'approval_required': {
+            text.callClosed();
+            sessionFloor = e.session_floor;
+            store.setTrust({ integrity: e.integrity, sessionFloor: e.session_floor, demotedBy: s.demotedBy });
+            const approved = await store.requestApproval(
+              {
+                call: e.call,
+                name: e.name,
+                args: e.arguments,
+                reason: refusalReason(e, gateMode, s.demotedBy),
+                integrity: e.integrity,
+                sessionFloor: e.session_floor,
+                effectiveIntegrity: e.effective_integrity,
+              },
+              signal,
+            );
+            if (++calls > MAX_TOOL_CALLS) {
+              emit('\n\nReached max tool iterations');
+              opts.onMaxIterationsReached?.();
+              await dropSession();
+              onDone(accumulated);
+              return;
+            }
+            if (approved) {
+              await runCall(e.name, e.arguments);
+            } else {
+              const refusal = JSON.stringify({ error: ZEOS_REFUSAL });
+              text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
+              s.toolCount += 1;
+              pendingResultLabel = `${e.name} refusal #${s.toolCount}`;
+              await s.run.deliverRefusal(ZEOS_REFUSAL);
+            }
+            break;
+          }
+          case 'tool_refused': {
+            text.callClosed();
+            const refusal = JSON.stringify({ error: `The kernel refused this call: ${e.detail}` });
+            text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
+            s.toolCount += 1;
+            pendingResultLabel = `${e.name} refusal #${s.toolCount}`;
+            await s.run.deliverRefusal(`The kernel refused this call (${e.fault}): ${e.detail}`);
+            break;
+          }
+          case 'reply':
+            text.finish();
+            break;
+          case 'spoof':
+          case 'fault':
+            console.warn(`[zeos] ${e.type}:`, e);
+            break;
+          case 'waiting':
+            break;
+        }
+      }
+      if (changed) {
+        store.setTrust({ integrity: s.integrity, sessionFloor, demotedBy: s.demotedBy });
+        reportTrust(s);
+      }
+      if (import.meta.env.DEV) store.appendJournal(await s.run.journalLines());
+      if ((await s.run.waitingOn()) === 'chat.user') break;
+    }
+
+    text.finish();
+    store.setTrust({ integrity: s.integrity, sessionFloor, demotedBy: s.demotedBy });
+    reportTrust(s);
+    // The run now holds exactly the conversation the next request will send.
+    s.key = conversationKey(system, thinking, gateMode, [
+      ...prior,
+      last,
+      { role: 'assistant', content: history || accumulated },
+    ]);
+    if (onUsage) {
+      const decodeMs = firstTokenAt === null ? 0 : lastTokenAt - firstTokenAt;
+      onUsage({
+        input: 0,
+        output: outputTokens,
+        tps: decodeMs > 0 ? outputTokens / (decodeMs / 1000) : undefined,
+      });
+    }
+    onDone(accumulated);
+  } catch (err) {
+    setLlmPreparingToolCall(null);
+    // Mid-turn, the run is waiting somewhere only this loop knew about; the
+    // next message replays the stored history into a fresh one instead.
+    await dropSession();
+    if (isAbortError(err)) {
+      onDone(accumulated);
+      return;
+    }
+    onError(err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
+/** Which model id the chat is on, for callers that only have the config. */
+export function isZeosActive(config: StreamChatOptions['config']): boolean {
+  return getLocalGemmaModel(resolveActiveLocalModelIdOrDefault(config))?.family === 'zeos-qwen';
+}

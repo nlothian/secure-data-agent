@@ -2886,3 +2886,153 @@ body.react-view-expanded .exec-tabs .pane-collapse-btn {
   color: var(--aqua-500);
 }
 
+
+/* ── ZEOS Qwen 4B: trust indicator, ring badges, approval card, journal ── */
+.chat-zeos-strip {
+  display: flex;
+  align-items: center;
+  padding: var(--s-1) var(--s-3);
+  border-bottom: 1px solid var(--mist);
+  background: var(--white);
+  min-width: 0;
+}
+.chat-zeos-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 1px var(--s-2);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--graphite);
+  border: 1px solid var(--mist);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-zeos-trust-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--silver);
+}
+.chat-zeos-trust[data-state="trusted"] {
+  border-color: rgba(0, 168, 107, 0.45);
+  background: rgba(0, 168, 107, 0.08);
+}
+.chat-zeos-trust[data-state="trusted"] .chat-zeos-trust-dot { background: var(--success-500); }
+.chat-zeos-trust[data-state="demoted"] {
+  border-color: rgba(244, 168, 0, 0.55);
+  background: rgba(244, 168, 0, 0.14);
+}
+.chat-zeos-trust[data-state="demoted"] .chat-zeos-trust-dot { background: var(--warning-500); }
+.chat-zeos-trust[data-state="floor"] {
+  border-color: rgba(244, 168, 0, 0.4);
+  background: rgba(244, 168, 0, 0.06);
+}
+.chat-zeos-trust[data-state="floor"] .chat-zeos-trust-dot {
+  background: var(--white);
+  border: 2px solid var(--warning-500);
+  width: 5px;
+  height: 5px;
+}
+.chat-zeos-trust[data-state="error"] {
+  border-color: rgba(229, 57, 53, 0.45);
+  background: rgba(229, 57, 53, 0.08);
+}
+.chat-zeos-trust[data-state="error"] .chat-zeos-trust-dot { background: var(--danger-500); }
+.chat-zeos-trust[data-state="starting"] .chat-zeos-trust-dot {
+  background: var(--aqua-400);
+  animation: chat-status-pulse 1.6s ease-out infinite;
+}
+
+.chat-ring-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--graphite);
+  background: var(--cloud);
+  border: 1px solid var(--mist);
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+.chat-ring-badge[data-ring="3"] {
+  color: #7a5400;
+  background: rgba(244, 168, 0, 0.14);
+  border-color: rgba(244, 168, 0, 0.45);
+}
+.chat-ring-badge[data-ring="2"] {
+  color: #00603d;
+  background: rgba(0, 168, 107, 0.08);
+  border-color: rgba(0, 168, 107, 0.4);
+}
+
+.chat-zeos-approval {
+  margin: 0 var(--s-3) var(--s-2);
+  padding: 10px 12px;
+  background: rgba(244, 168, 0, 0.08);
+  border: 1px solid rgba(244, 168, 0, 0.55);
+  border-radius: var(--r-8);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--font-sans);
+}
+.chat-zeos-approval-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.chat-zeos-approval-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.chat-zeos-approval-demoted {
+  font-size: 11px;
+  color: #7a5400;
+}
+.chat-zeos-approval-reason {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--graphite);
+}
+.chat-zeos-approval-args {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-4);
+  background: rgba(0, 0, 0, 0.05);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-zeos-journal {
+  margin: 0 var(--s-3) var(--s-2);
+  border: 1px dashed var(--mist);
+  border-radius: var(--r-8);
+  font-size: 12px;
+}
+.chat-zeos-journal-count {
+  margin-left: auto;
+  color: var(--steel);
+  font-size: 11px;
+}
+.chat-zeos-journal .chat-tool-body pre {
+  max-height: 240px;
+  overflow: auto;
+  font-size: 10px;
+}

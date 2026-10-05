@@ -14,6 +14,7 @@
     "test:llm_tests": "GDA_E2E_LLM=1 playwright test --project=llm",
     "models:fetch": "node scripts/fetch-models.mjs",
     "models:manifest": "node scripts/manifest-from-hub.mjs",
+    "models:manifest-local": "node scripts/manifest-from-local.mjs",
     "zeos:sync": "node scripts/zeos-sync.mjs"
   },
   "dependencies": {

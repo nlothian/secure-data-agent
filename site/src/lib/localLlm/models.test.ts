@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
 import {
+  ALL_LOCAL_MODELS,
   DEFAULT_LOCAL_GEMMA_ID,
   LOCAL_GEMMA_MODELS,
+  transformersModelIdFor,
   formatGB,
   getLocalGemmaModel,
   isLocalGemmaId,
@@ -31,6 +33,24 @@ describe('LOCAL_GEMMA_MODELS', () => {
     expect(getLocalGemmaModel('gemma-4-e4b')?.label).toBe('Gemma 4 E4B');
   });
 
+  it('lists ZEOS Qwen 4B only in local-models dev mode', () => {
+    const zeos = ALL_LOCAL_MODELS.find((m) => m.id === 'zeos-qwen3.5-4b');
+    expect(zeos).toMatchObject({
+      label: 'ZEOS Qwen 4B',
+      family: 'zeos-qwen',
+      hfRepoId: 'metacognitionai/Qwen3.5-4B-ZEOS-OPT',
+      sideTaskModelId: 'qwen3.5-4b',
+    });
+    // Vitest runs with neither PUBLIC_LOCAL_MODELS nor a stub script.
+    expect(LOCAL_GEMMA_MODELS.map((m) => m.id)).not.toContain('zeos-qwen3.5-4b');
+    expect(isLocalGemmaId('zeos-qwen3.5-4b')).toBe(false);
+  });
+
+  it('runs side tasks for a ZEOS model on its plain counterpart', () => {
+    expect(transformersModelIdFor('zeos-qwen3.5-4b')).toBe('qwen3.5-4b');
+    expect(transformersModelIdFor('gemma-4-e2b')).toBe('gemma-4-e2b');
+  });
+
   it('defaults to a predefined model', () => {
     expect(isLocalGemmaId(DEFAULT_LOCAL_GEMMA_ID)).toBe(true);
   });
@@ -41,7 +61,7 @@ describe('LOCAL_GEMMA_MODELS', () => {
     expect(m.hfRepoId).toMatch(/^onnx-community\/gemma-4-E[24]B-it-ONNX$/);
   });
 
-  it.each(LOCAL_GEMMA_MODELS.filter(hasManifest).map((m) => [m.id, m] as const))(
+  it.each(ALL_LOCAL_MODELS.filter(hasManifest).map((m) => [m.id, m] as const))(
     '%s approxBytes is within 1%% of the file manifest',
     (_id, m) => {
       const actual = totalBytes(m);

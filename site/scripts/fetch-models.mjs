@@ -7,6 +7,7 @@
  *   npm run models:fetch -- e2b      # Gemma 4 E2B, ≈ 3.1 GB
  *   npm run models:fetch -- e4b      # Gemma 4 E4B, ≈ 4.9 GB
  *   npm run models:fetch -- qwen4b   # Qwen 3.5 4B (needs its manifest entry)
+ *   npm run models:fetch -- zeosq4b  # ZEOS Qwen 4B: linked from $ZEOS_REPO, no download
  *   npm run models:fetch -- all      # every alias that has a manifest entry
  *
  * Reads the same manifest the app uses (`src/lib/localLlm/modelFiles.json`),
@@ -37,6 +38,22 @@ const ALIASES = {
   e2b: 'onnx-community/gemma-4-E2B-it-ONNX',
   e4b: 'onnx-community/gemma-4-E4B-it-ONNX',
   qwen4b: 'onnx-community/Qwen3.5-4B-ONNX-OPT',
+  zeosq4b: 'metacognitionai/Qwen3.5-4B-ZEOS-OPT',
+};
+
+/**
+ * Repos that are not on the Hub: the ZEOS export is built in a ZEOS checkout
+ * (`demo/coop-count-web/export/opt_zeos_surgery.py`), so its files are
+ * hard-linked (or copied, across filesystems) from there.
+ */
+const ZEOS_REPO = path.resolve(
+  process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers',
+);
+const LOCAL_SOURCES = {
+  'metacognitionai/Qwen3.5-4B-ZEOS-OPT': path.join(
+    ZEOS_REPO,
+    'demo/coop-count-web/models/Qwen3.5-4B-ZEOS-OPT',
+  ),
 };
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -109,7 +126,44 @@ async function fetchFile(repo, file) {
   fs.renameSync(part, dest);
 }
 
+function linkFile(repo, src, file) {
+  const from = path.join(src, file.path);
+  const dest = path.join(modelsRoot, repo, file.path);
+  if (!fs.existsSync(from)) throw new Error(`${from} is missing; build the export in ZEOS first`);
+  const size = fs.statSync(from).size;
+  if (size !== file.bytes) {
+    throw new Error(
+      `${from}: ${size} bytes, the manifest says ${file.bytes} — ` +
+        `re-run \`npm run models:manifest-local -- ${repo}\` after rebuilding the export`,
+    );
+  }
+  if (fs.existsSync(dest) && fs.statSync(dest).size === file.bytes) {
+    console.log(`  ✓ ${file.path} (present)`);
+    return;
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.rmSync(dest, { force: true });
+  try {
+    fs.linkSync(from, dest);
+    console.log(`  ⇒ ${file.path} (linked)`);
+  } catch {
+    fs.copyFileSync(from, dest);
+    console.log(`  ⇒ ${file.path} (copied)`);
+  }
+}
+
 for (const repo of repos) {
+  if (LOCAL_SOURCES[repo] && !manifest[repo]) {
+    // First run: link meta.json so manifest-from-local can read it.
+    const src = LOCAL_SOURCES[repo];
+    fs.mkdirSync(path.join(modelsRoot, repo), { recursive: true });
+    fs.copyFileSync(path.join(src, 'meta.json'), path.join(modelsRoot, repo, 'meta.json'));
+    console.error(
+      `no manifest entry for ${repo} — copied its meta.json; run ` +
+        `\`npm run models:manifest-local -- ${repo}\`, then fetch again`,
+    );
+    process.exit(1);
+  }
   const m = manifest[repo];
   if (!m) {
     console.error(
@@ -121,7 +175,8 @@ for (const repo of repos) {
   const total = files.reduce((n, f) => n + f.bytes, 0);
   console.log(`${repo} → ${path.join(modelsRoot, repo)} (${fmtGB(total)})`);
   for (const f of files) {
-    await fetchFile(repo, f);
+    if (LOCAL_SOURCES[repo]) linkFile(repo, LOCAL_SOURCES[repo], f);
+    else await fetchFile(repo, f);
   }
 }
 console.log('done');

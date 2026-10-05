@@ -826,6 +826,12 @@ export function parseLoadDataInput(raw: Record<string, unknown>): LoadDataInput 
 interface RunSQLInput {
   path: string;
   registerAs: string | undefined;
+  /**
+   * Inline SQL, used instead of `path` when given without one. Only the ZEOS
+   * model's RunSQL spec offers it (`zeosAgentTools`), so its chat machine can
+   * classify the query as read-only before it runs.
+   */
+  sql?: string;
 }
 
 interface RunPythonInput {
@@ -1004,11 +1010,22 @@ const RunSQLTool: AgentTool<RunSQLInput, RunSQLOutcome, RunSQLResult> = {
   parseInput: (raw) => ({
     path: typeof raw.path === 'string' ? raw.path : '',
     registerAs: typeof raw.register_as === 'string' ? raw.register_as : undefined,
+    sql: typeof raw.sql === 'string' ? raw.sql : undefined,
   }),
-  gateInput: (input) => ({ path: input.path, register_as: input.registerAs }),
-  run: (input) => runSQLAtPath(input.path, input.registerAs),
+  gateInput: (input) =>
+    input.sql !== undefined && !input.path
+      ? { sql: input.sql, register_as: input.registerAs }
+      : { path: input.path, register_as: input.registerAs },
+  run: (input) =>
+    input.sql !== undefined && !input.path
+      ? runSQL(input.sql, input.registerAs)
+      : runSQLAtPath(input.path, input.registerAs),
   panel: {
     onPending: (input) => {
+      if (input.sql !== undefined && !input.path) {
+        panel.setPending('sql', input.sql);
+        return;
+      }
       // Mark the SQL pane pending, then surface the File tab with the
       // about-to-run source so the user can review it during the Step gate.
       // `onRunning` switches back to the SQL tab once the gate releases.

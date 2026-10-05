@@ -154,6 +154,13 @@ export async function ensureLoaded(modelId: string): Promise<void> {
   if (!model) {
     throw new Error(`Unknown local model: ${modelId}`);
   }
+  const family = model.family;
+  if (family === 'zeos-qwen') {
+    throw new Error(
+      `${model.label} runs under the ZEOS kernel (src/lib/zeos/streamZeos.ts), ` +
+        'not in the transformers.js worker.',
+    );
+  }
 
   const loadId = ++currentLoadId;
   // The worker disposes whatever it holds before loading the next model.
@@ -263,7 +270,7 @@ export async function ensureLoaded(modelId: string): Promise<void> {
               return;
           }
         });
-        post({ type: 'load', id: requestId, hfId: model.hfRepoId, family: model.family });
+        post({ type: 'load', id: requestId, hfId: model.hfRepoId, family });
         armStall();
       });
     } finally {

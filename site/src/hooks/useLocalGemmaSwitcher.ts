@@ -41,6 +41,11 @@ export default function useLocalGemmaSwitcher(
       if (opts.loadOnApply) {
         void (async () => {
           try {
+            if (getLocalGemmaModel(modelId)?.family === 'zeos-qwen') {
+              const { warmZeos } = await import('../lib/zeos/streamZeos');
+              await warmZeos();
+              return;
+            }
             const { ensureLoaded } = await import('../lib/localLlm/llmService');
             await ensureLoaded(modelId);
           } catch (err) {

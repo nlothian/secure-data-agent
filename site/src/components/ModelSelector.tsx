@@ -21,7 +21,7 @@ export default function ModelSelector({
   onModelMenuOpenChange,
   onRequestModelReady,
 }: ModelSelectorProps) {
-  const { config, ready, setModel, setThinkingEnabled } = useLLMConfig();
+  const { config, ready, setModel, setThinkingEnabled, setZeosAttentionOnly } = useLLMConfig();
   const modelSwitcher = useLocalGemmaSwitcher({ loadOnApply: true });
 
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -145,7 +145,7 @@ export default function ModelSelector({
                 >
                   <span className="chat-model-option-main">
                     <img
-                      src="/gemma-color.svg"
+                      src={m.family === 'zeos-qwen' ? '/zeos-shield.svg' : '/gemma-color.svg'}
                       alt=""
                       aria-hidden="true"
                       className="chat-model-prefix"
@@ -197,6 +197,25 @@ export default function ModelSelector({
             aria-label="Enable thinking mode"
           />
           Thinking
+        </label>
+      )}
+      {isLocal && resolvedActive?.family === 'zeos-qwen' && (
+        <label
+          className="chat-thinking-toggle"
+          title={
+            'Off (strict, default): once the model reads any tool output, side-effecting ' +
+            'tools need your approval until your next message. On: they need approval ' +
+            'only after the model measurably attends untrusted content. Applies from ' +
+            'your next message.'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={config.zeosAttentionOnly ?? false}
+            onChange={(e) => setZeosAttentionOnly(e.target.checked)}
+            aria-label="Attention-only approval"
+          />
+          Attention-only approval
         </label>
       )}
     </>

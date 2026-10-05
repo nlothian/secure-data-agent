@@ -6,7 +6,7 @@
  * stripped).
  */
 import { ensureLoaded, generate } from './llmService';
-import { getLocalGemmaModel } from './models';
+import { getLocalGemmaModel, transformersModelIdFor } from './models';
 import { getPromptFormat } from './promptFormat';
 import { escapeForQwenPrompt } from './qwenPrompt';
 import { createSplitterState, feedSplitter, flushSplitter } from './thinkingChannelSplitter';
@@ -17,7 +17,10 @@ export async function generatePlainTurn(args: {
   user: string;
   signal?: AbortSignal;
 }): Promise<string> {
-  const { modelId, system, user, signal } = args;
+  const { system, user, signal } = args;
+  // A ZEOS model is not run by the transformers.js worker; side tasks use its
+  // plain counterpart (`sideTaskModelId`).
+  const modelId = transformersModelIdFor(args.modelId);
   await ensureLoaded(modelId);
   const fmt = getPromptFormat(getLocalGemmaModel(modelId)?.family ?? 'gemma');
   // Callers defang Gemma's control tokens (`escapeForToolPrompt`); a Qwen

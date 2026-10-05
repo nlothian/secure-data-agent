@@ -5,6 +5,7 @@ import {
   EMPTY_CHAT_HISTORY,
   type ChatHistory,
   type ChatMessage,
+  type ChatTrust,
 } from '../types/chat';
 
 function isChatHistoryShape(value: unknown): value is ChatHistory {
@@ -111,6 +112,7 @@ export interface UseChatHistoryResult {
   appendLastAssistantHistory: (delta: string) => void;
   setLastAssistantContent: (content: string, error?: boolean) => void;
   setLastAssistantMaxIterations: () => void;
+  setLastAssistantTrust: (trust: ChatTrust) => void;
   replaceMessages: (messages: ChatMessage[]) => void;
   clear: () => void;
   flush: () => void;
@@ -177,6 +179,19 @@ export function useChatHistory(): UseChatHistoryResult {
     );
   }, []);
 
+  const setLastAssistantTrust = useCallback((trust: ChatTrust): void => {
+    update(
+      (prev) => {
+        if (prev.messages.length === 0) return prev;
+        const last = prev.messages[prev.messages.length - 1];
+        if (last.role !== 'assistant') return prev;
+        const nextLast: ChatMessage = { ...last, trust };
+        return { messages: [...prev.messages.slice(0, -1), nextLast] };
+      },
+      { persist: false },
+    );
+  }, []);
+
   const replaceMessages = useCallback((messages: ChatMessage[]): void => {
     update(() => ({ messages }));
   }, []);
@@ -197,6 +212,7 @@ export function useChatHistory(): UseChatHistoryResult {
     appendLastAssistantHistory,
     setLastAssistantContent,
     setLastAssistantMaxIterations,
+    setLastAssistantTrust,
     replaceMessages,
     clear,
     flush,

@@ -132,5 +132,55 @@
         "bytes": 7756
       }
     ]
+  },
+  "metacognitionai/Qwen3.5-4B-ZEOS-OPT": {
+    "required": [
+      {
+        "path": "config.json",
+        "bytes": 3198
+      },
+      {
+        "path": "generation_config.json",
+        "bytes": 248
+      },
+      {
+        "path": "onnx/decoder_zeos_q4f16.onnx",
+        "bytes": 1343583
+      },
+      {
+        "path": "onnx/decoder_zeos_q4f16.onnx_data",
+        "bytes": 2065635328
+      },
+      {
+        "path": "onnx/decoder_zeos_q4f16.onnx_data_1",
+        "bytes": 367513600
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx",
+        "bytes": 1064
+      },
+      {
+        "path": "onnx/embed_tokens_q4f16.onnx_data",
+        "bytes": 367513600
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 19226111
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 9162
+      },
+      {
+        "path": "meta.json",
+        "bytes": 27068
+      }
+    ],
+    "optional": [
+      {
+        "path": "chat_template.jinja",
+        "bytes": 7756
+      }
+    ]
   }
 }

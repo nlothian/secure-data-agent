@@ -5,7 +5,10 @@ import SandboxSettingsSection from './SandboxSettingsSection';
 import { CloseIcon } from './Icons';
 import useLLMConfig from '../hooks/useLLMConfig';
 import { LOCAL_GEMMA_ENDPOINT } from '../types/llm';
-import { resolveActiveLocalModelIdOrDefault } from '../lib/localLlm/models';
+import {
+  getLocalGemmaModel,
+  resolveActiveLocalModelIdOrDefault,
+} from '../lib/localLlm/models';
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -85,6 +88,8 @@ export default function SettingsOverlay({ open, onClose }: SettingsOverlayProps)
       const modelId = resolveActiveLocalModelIdOrDefault(config);
       void (async () => {
         try {
+          // The ZEOS model is not run by the transformers.js worker.
+          if (getLocalGemmaModel(modelId)?.family === 'zeos-qwen') return;
           const { ensureLoaded } = await import('../lib/localLlm/llmService');
           await ensureLoaded(modelId);
         } catch (err) {

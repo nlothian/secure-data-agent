@@ -30,6 +30,8 @@ export interface CompactionSlice {
 export interface ConvTurn {
   role: 'user' | 'assistant';
   content: string;
+  /** ZEOS Qwen: the recorded trust of an assistant turn. */
+  trust?: ChatMessage['trust'];
 }
 
 export function buildCompactionContext(messages: ChatMessage[]): string {
@@ -47,12 +49,13 @@ export function mapMessagesForLLM(messages: ChatMessage[]): ConvTurn[] {
     )
     .map((m) => {
       if (m.role !== 'assistant') return { role: m.role, content: m.content };
+      const trust = m.trust ? { trust: m.trust } : {};
       // historyContent (Gemma replay) never contains the compacted marker —
       // the trimmer only writes it into content. For the cloud-API branch we
       // strip the marker out so the foreign model doesn't see a Gemma-format
       // channel tag it was never trained on.
       const raw = m.historyContent ?? m.content;
-      return { role: m.role, content: stripCompactedMarker(raw) };
+      return { role: m.role, content: stripCompactedMarker(raw), ...trust };
     });
 }
 

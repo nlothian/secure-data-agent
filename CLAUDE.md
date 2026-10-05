@@ -156,3 +156,47 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
 - `e2e/zeosKernel.spec.ts` (in `npm run test:e2e`) boots it with the stub
   model thread and steps `coop-count-scripted`; it skips until
   `npm run zeos:sync` has run, and needs network for jsDelivr.
+
+## ZEOS Qwen 4B (model `zeos-qwen3.5-4b`)
+
+The agent runs under the ZEOS kernel instead of the transformers.js worker
+(family `zeos-qwen`; `src/lib/streamChat.ts` routes it to
+`src/lib/zeos/streamZeos.ts`). User messages enter on ring 2 (TRUSTED),
+tool results on ring 3 (EXTERNAL). Calls go to `tools.read` or
+`tools.effect` according to `src/lib/zeos/zeosToolClasses.ts`, which is the
+only place that policy lives. `RunSQL` is a read only when its SQL is inline
+(`sql`) and read-only, so this model gets an inline-`sql` RunSQL spec. When the
+kernel refuses an effect, the chat shows an approval card. RunSubAgent and
+compaction are off for this model. Side tasks such as code summaries use
+`qwen3.5-4b`.
+
+- **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
+  mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
+  zeosq4b`, which hard-links them from
+  `$ZEOS_REPO/demo/coop-count-web/models/Qwen3.5-4B-ZEOS-OPT`. After
+  rebuilding the export, run `npm run models:manifest-local --
+  metacognitionai/Qwen3.5-4B-ZEOS-OPT`, which rewrites its `modelFiles.json`
+  entry from `meta.json`.
+- **Real model thread.** It is not wired yet. The one plug point is
+  `createRealModelThread` in `src/lib/zeos/zeosModelWorker.ts`.
+- **Stub mode (dev only).** Set localStorage `gda.zeos.stub` to
+  `{"replies": [...], "attention": "first" | "recent" | "uniform" | "none"}`
+  and reload. The scripted chat stub (`src/lib/zeos/scriptedChatModel.ts`)
+  then plays the replies; a reply ending in `</tool_call>` is a tool call. With
+  `recent`, reading a tool result demotes the job; with `first`, nothing ever
+  does. `e2e/zeosChat.spec.ts` uses this.
+- **Gate mode.** The "Attention-only approval" checkbox (config
+  `zeosAttentionOnly`, shown only for this model) switches ZEOS
+  `open_chat(gate_mode=…)`:
+  - **Strict, the default.** Reading any tool result needs approval for
+    effects until the next user message.
+  - **Attention.** Effects need approval only after a measured-attention
+    demotion.
+
+  A switch applies from the next message: the conversation key changes, so a
+  fresh run replays the history.
+- **Runs.** There is one ZEOS `ChatRun` per conversation, keyed by system
+  prompt, thinking, gate mode and prior messages. A new chat, reload, retry or
+  abort opens a fresh run and replays history (`buildZeosImport`). Past
+  assistant turns replay at their recorded `ChatMessage.trust.integrity`;
+  turns with no record replay as untrusted (3).

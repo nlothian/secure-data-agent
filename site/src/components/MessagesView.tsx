@@ -16,6 +16,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
 } from './Icons';
+import { RingBadge } from './ZeosPanels';
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
@@ -103,10 +104,13 @@ export function CollapsibleToolCall({
   name,
   args,
   result,
+  ring,
 }: {
   name: string;
   args: string;
   result: string | null;
+  /** ZEOS Qwen: the ring the result arrived on. */
+  ring?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -120,6 +124,7 @@ export function CollapsibleToolCall({
       >
         <ChevronRightIcon size={14} />
         <span className="chat-tool-name">{name}</span>
+        {ring !== undefined && result !== null && <RingBadge ring={ring} />}
       </button>
       {expanded && (
         <div className="chat-tool-body">
@@ -224,11 +229,18 @@ export function CollapsibleElidedReasoning() {
   );
 }
 
-function AssistantBody({ content }: { content: string }) {
+function AssistantBody({
+  content,
+  toolRings,
+}: {
+  content: string;
+  toolRings?: readonly number[];
+}) {
   const segments = useMemo<AssistantSegment[]>(
     () => parseAssistantContent(content),
     [content],
   );
+  let toolIndex = 0;
   return (
     <>
       {segments.map((seg, i) => {
@@ -251,12 +263,14 @@ function AssistantBody({ content }: { content: string }) {
         if (seg.kind === 'compacted') {
           return <CollapsibleElidedReasoning key={i} />;
         }
+        const ring = toolRings?.[toolIndex++];
         return (
           <CollapsibleToolCall
             key={i}
             name={seg.name}
             args={seg.args}
             result={seg.result}
+            ring={ring}
           />
         );
       })}
@@ -273,7 +287,7 @@ function renderMessageBody(
   if (m.role === 'assistant' && !m.error) {
     return (
       <>
-        <AssistantBody content={m.content} />
+        <AssistantBody content={m.content} toolRings={m.trust?.toolRings} />
         {m.maxIterationsReached && onContinue && (
           <button
             type="button"
