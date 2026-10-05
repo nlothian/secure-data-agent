@@ -334,15 +334,20 @@ export class ZeosTurnText {
     this.startAssistantTurn();
   }
 
-  /** The turn ended in a reply (or was cut short): release anything held back as text. */
+  /** Release the model text the escapers hold back (the turn was cut short). */
+  flushHeld(): void {
+    this.appUi('');
+    this.appHistory('');
+  }
+
+  /** The turn ended in a reply: release anything held back as text. */
   finish(): void {
     for (const e of flushSplitter(this.splitter)) this.handle(e);
     if (!this.parsedCall && this.toolBuffer) {
       this.visible(this.toolBuffer);
       this.toolBuffer = '';
     }
-    this.appUi('');
-    this.appHistory('');
+    this.flushHeld();
   }
 }
 
@@ -423,6 +428,8 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   let outputTokens = 0;
   let firstTokenAt: number | null = null;
   let lastTokenAt = 0;
+  /** The turn in progress, so every exit path can save its trust (T5). */
+  let live: { s: Session; text: ZeosTurnText } | null = null;
 
   try {
     const eng = await engine();
@@ -472,8 +479,34 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     const turnStart = performance.now();
     await s.run.sendUser(userTextForZeos(last.content));
     const text = new ZeosTurnText(fmt, thinking, emit, emitHistory);
+    live = { s, text };
     let calls = 0;
     let sessionFloor: number | null = null;
+
+    /** A demotion is saved with the message at once, so a Stop right after it cannot lose it. */
+    const applyDemotion = (e: Extract<ZeosEvent, { type: 'demoted' }>): void => {
+      s.integrity = Math.max(s.integrity, e.to_integrity);
+      s.demotedBy = e.because.map((seg) => segmentLabel(seg, s)).join(', ') || s.demotedBy;
+      store.setTrust({ integrity: s.integrity, sessionFloor, demotedBy: s.demotedBy });
+      reportTrust(s);
+    };
+
+    /**
+     * Count a call the model made, whatever happens to it next (run, refused
+     * by the kernel, or waiting for approval), and end the turn past the cap,
+     * before any approval card: refused calls cannot loop without limit (C7).
+     */
+    const overCap = async (): Promise<boolean> => {
+      if (++calls <= MAX_TOOL_CALLS) return false;
+      text.flushHeld();
+      emit('\n\nReached max tool iterations');
+      opts.onMaxIterationsReached?.();
+      reportTrust(s);
+      live = null;
+      await dropSession();
+      onDone(accumulated);
+      return true;
+    };
     /** What the next tools.results arrival is, for "Demoted by …". */
     let pendingResultLabel: string | null = null;
     /** What the latest arrival was, for a spoof alarm on it. */
@@ -505,8 +538,17 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const events = await s.run.step(STEP_TICKS);
       let changed = false;
-      for (const e of events) {
-        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      for (const [i, e] of events.entries()) {
+        if (signal?.aborted) {
+          // The rest of the batch may still say the job was demoted; keep that.
+          for (const d of events.slice(i)) {
+            if (d.type === 'arrived' && isResultPipe(d.pipe) && pendingResultLabel) {
+              s.segments.set(d.segment, pendingResultLabel);
+            }
+            if (d.type === 'demoted') applyDemotion(d);
+          }
+          throw new DOMException('Aborted', 'AbortError');
+        }
         switch (e.type) {
           case 'token': {
             const now = performance.now();
@@ -532,21 +574,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             }
             break;
           case 'demoted':
-            s.integrity = e.to_integrity;
-            s.demotedBy = e.because.map((seg) => segmentLabel(seg, s)).join(', ') || null;
-            changed = true;
+            applyDemotion(e);
             break;
           case 'tool_call': {
             text.callClosed();
             noteMasked(e);
             await s.run.drain(e.sink);
-            if (++calls > MAX_TOOL_CALLS) {
-              emit('\n\nReached max tool iterations');
-              opts.onMaxIterationsReached?.();
-              await dropSession();
-              onDone(accumulated);
-              return;
-            }
+            if (await overCap()) return;
             await runCall(e.name, e.arguments, e.sink === 'tools.effect' ? 'effect' : 'read');
             break;
           }
@@ -555,6 +589,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             noteMasked(e);
             sessionFloor = e.session_floor;
             store.setTrust({ integrity: e.integrity, sessionFloor: e.session_floor, demotedBy: s.demotedBy });
+            if (await overCap()) return;
             const approved = await store.requestApproval(
               {
                 call: e.call,
@@ -567,13 +602,6 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
               },
               signal,
             );
-            if (++calls > MAX_TOOL_CALLS) {
-              emit('\n\nReached max tool iterations');
-              opts.onMaxIterationsReached?.();
-              await dropSession();
-              onDone(accumulated);
-              return;
-            }
             if (approved) {
               await runCall(e.name, e.arguments, 'approved');
             } else {
@@ -589,6 +617,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
           case 'tool_refused': {
             text.callClosed();
             noteMasked(e);
+            if (await overCap()) return;
             const refusal = JSON.stringify({ error: `The kernel refused this call: ${e.detail}` });
             text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
             s.toolCount += 1;
@@ -627,6 +656,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     }
 
     text.finish();
+    live = null;
     store.setTrust({ integrity: s.integrity, sessionFloor, demotedBy: s.demotedBy });
     reportTrust(s);
     // The run now holds exactly the conversation the next request will send.
@@ -658,6 +688,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     onDone(accumulated);
   } catch (err) {
     setLlmPreparingToolCall(null);
+    // Stop, abort or error mid-turn: save what the turn knew of its trust
+    // (a demotion included) with whatever text it kept.
+    if (live) {
+      live.text.flushHeld();
+      reportTrust(live.s);
+      live = null;
+    }
     // Mid-turn, the run is waiting somewhere only this loop knew about; the
     // next message replays the stored history into a fresh one instead.
     await dropSession();

@@ -167,7 +167,7 @@ async function runInjection(page: Page, attentionOnly: boolean) {
       if (pending) {
         w.__cards!.push({ name: pending.name, reason: pending.reason, args: pending.args });
         console.warn(`[zeosInjection] denying ${pending.name}: ${pending.reason}`);
-        z.deny();
+        z.deny(pending.id);
       }
     }, 500);
   });

@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type MouseEvent } from 'react';
 import * as zeosStore from '../lib/zeos/zeosSessionStore';
 import { ChevronRightIcon } from './Icons';
 
@@ -153,11 +153,34 @@ function formatArgs(args: Record<string, unknown>): string {
   return JSON.stringify(args, null, 2);
 }
 
+/**
+ * How long a new card's buttons stay disabled: the second click of a
+ * double-click on the previous card must not land on this one.
+ */
+export const APPROVAL_ARM_MS = 400;
+
 /** The kernel refused a side-effecting call: the user decides. */
 export function ZeosApprovalCard() {
   const z = useZeos();
   const pending = z.pending;
   if (!pending) return null;
+  // A fresh card per call, so nothing (the arming delay included) carries over.
+  return <ApprovalCardBody key={pending.id} pending={pending} z={z} />;
+}
+
+function ApprovalCardBody({ pending, z }: { pending: zeosStore.ZeosPendingApproval; z: zeosStore.ZeosSnapshot }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), APPROVAL_ARM_MS);
+    return () => clearTimeout(t);
+  }, []);
+  // Each answer names this card's call: a click meant for an earlier card
+  // (or a double-click's second click, `detail` 2) settles nothing else.
+  const answer = (approved: boolean) => (e: MouseEvent) => {
+    if (e.detail > 1) return;
+    if (approved) zeosStore.approve(pending.id);
+    else zeosStore.deny(pending.id);
+  };
   return (
     <div className="chat-zeos-approval" role="alertdialog" aria-label="Approve tool call">
       <div className="chat-zeos-approval-head">
@@ -173,10 +196,10 @@ export function ZeosApprovalCard() {
         <code>{formatArgs(pending.args)}</code>
       </pre>
       <div className="chat-model-confirm-actions">
-        <button type="button" className="chat-model-apply" onClick={zeosStore.approve}>
+        <button type="button" className="chat-model-apply" disabled={!armed} onClick={answer(true)}>
           Approve
         </button>
-        <button type="button" className="chat-model-cancel" onClick={zeosStore.deny}>
+        <button type="button" className="chat-model-cancel" disabled={!armed} onClick={answer(false)}>
           Deny
         </button>
       </div>

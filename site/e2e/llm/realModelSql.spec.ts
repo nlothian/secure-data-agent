@@ -283,7 +283,7 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
                 `[realModelSql] approving ZEOS effect ${pending.name}: ${pending.reason} ` +
                   JSON.stringify(pending.args).slice(0, 600).replace(/\n/g, ' '),
               );
-              z.approve();
+              z.approve(pending.id);
             }
           }
         }, IS_ZEOS)
