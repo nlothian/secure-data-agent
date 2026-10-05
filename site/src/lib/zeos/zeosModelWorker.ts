@@ -8,13 +8,11 @@
  *   `ChatStubScript` (`{replies, attention}`), and the scripted chat stub
  *   (src/workers/zeosChatStubModel.worker.ts) plays it. The e2e suite and
  *   manual UI work use this; no weights are loaded.
- * - **Real model**: `createRealModelThread` below. It is where the OPT ZEOS
- *   model thread (ZEOS `web/opt_zeos_worker.js`, vendored by
- *   `npm run zeos:sync`) gets wired: return its module worker and the `init`
- *   its first message needs. It must answer the channel's `pieces` and
- *   `backend` calls (`serveRequest` reads `meta.tokenizerSize` and
- *   `backend`) and post `{progress}` / `{ready}` per the model-thread
- *   protocol (`ModelThreadMessage` in ./protocol.ts).
+ * - **Real model**: `createRealModelThread` below, the OPT ZEOS model thread
+ *   (src/workers/zeosOptModel.worker.ts over ZEOS `web/opt_zeos_worker.js`,
+ *   vendored by `npm run zeos:sync`) on WebGPU. It answers the channel's
+ *   `pieces` and `backend` calls and posts `{progress}` / `{ready}` per the
+ *   model-thread protocol (`ModelThreadMessage` in ./protocol.ts).
  */
 import {
   isLocalModelsMode,
@@ -22,6 +20,12 @@ import {
   ZEOS_STUB_STORAGE_KEY,
   type LocalGemmaModel,
 } from '../localLlm/models';
+import {
+  createLoadProgressAggregator,
+  type LoadProgressAggregator,
+  type LoadProgressSnapshot,
+} from '../localLlm/loadProgress';
+import { setLocalLlmDownloadProgress } from '../executionPanelStore';
 import type { AttachModelOptions } from './zeosHost';
 import type { ChatStubScript } from './scriptedChatModel';
 
@@ -61,16 +65,68 @@ function createStubThread(script: ChatStubScript): ZeosModelThread {
   };
 }
 
-/** B1/C1: wire the OPT ZEOS model thread here. */
+/**
+ * The OPT+ZEOS model thread (src/workers/zeosOptModel.worker.ts), loading the
+ * export from `/models/<hfRepoId>/`. Its files are not on the Hub, so this
+ * needs local-models mode (`PUBLIC_LOCAL_MODELS=1`).
+ */
 function createRealModelThread(model: LocalGemmaModel): ZeosModelThread {
-  throw new Error(
-    `The ${model.label} model thread (ZEOS opt_zeos_worker.js) is not wired up yet. ` +
-      (isLocalModelsMode()
-        ? `Its files would be served from /models/${model.hfRepoId}/. `
-        : 'It needs PUBLIC_LOCAL_MODELS=1. ') +
-      `For the scripted stub, set localStorage['${ZEOS_STUB_STORAGE_KEY}'] to ` +
-      '{"replies": [...], "attention": "recent"} and reload.',
-  );
+  if (!isLocalModelsMode()) {
+    throw new Error(
+      `${model.label} is only served from the local models/ folder: start the dev server ` +
+        `with PUBLIC_LOCAL_MODELS=1 (and run \`npm run models:fetch -- zeosq4b\`). ` +
+        `For the scripted stub, set localStorage['${ZEOS_STUB_STORAGE_KEY}'] to ` +
+        '{"replies": [...], "attention": "recent"} and reload.',
+    );
+  }
+  return {
+    modelWorker: () =>
+      new Worker(new URL('../../workers/zeosOptModel.worker.ts', import.meta.url), {
+        type: 'module',
+      }),
+    init: { modelUrl: `${import.meta.env.BASE_URL ?? '/'}models/${model.hfRepoId}/` },
+    label: `${model.label} (OPT+ZEOS, WebGPU)`,
+    stub: false,
+  };
+}
+
+/**
+ * Feed the model thread's `{progress}` messages to the Throbber, as
+ * llmService does for the transformers.js models: one aggregate over the
+ * thread's own byte count (`bytes` / `bytes_total` cover each unique file
+ * once; the tied embedding is read once for two manifest entries), then
+ * "Loading … onto GPU" while ONNX Runtime builds the sessions.
+ */
+export function createZeosLoadProgress(model: LocalGemmaModel): {
+  onProgress: (p: Record<string, unknown>) => void;
+  done: () => void;
+} {
+  let agg: LoadProgressAggregator | null = null;
+  const publish = (s: LoadProgressSnapshot) => setLocalLlmDownloadProgress(s);
+  return {
+    onProgress(p) {
+      const total = typeof p.bytes_total === 'number' ? p.bytes_total : 0;
+      if (!agg && total > 0) {
+        agg = createLoadProgressAggregator({
+          label: model.label,
+          // Local-models mode: the files come from disk, not the network.
+          fromCache: true,
+          expectedFiles: [{ path: 'model', bytes: total }],
+          onChange: publish,
+        });
+        publish(agg.snapshot());
+      }
+      if (!agg) return;
+      if (p.phase === 'download' && typeof p.bytes === 'number') {
+        agg.onEvent({ status: 'progress', file: 'model', loaded: p.bytes, total });
+      } else if (p.phase === 'session') {
+        agg.beginInit();
+      }
+    },
+    done() {
+      setLocalLlmDownloadProgress(null);
+    },
+  };
 }
 
 export function zeosModelThreadFor(model: LocalGemmaModel): ZeosModelThread {

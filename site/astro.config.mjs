@@ -82,7 +82,17 @@ export default defineConfig({
       // from inside the LLM Web Worker (llm.worker.ts), which Vite's
       // main-thread dep scan never sees, so excluding it avoids a
       // mid-session re-optimisation race on first worker spawn.
-      exclude: ['@duckdb/duckdb-wasm', '@huggingface/transformers', 'pixi.js'],
+      // onnxruntime-web and @huggingface/tokenizers are imported directly
+      // only by the ZEOS model thread (src/workers/zeosOptModel.worker.ts), for
+      // the same reasons: ORT's own asset resolution, and a worker-only import
+      // the main-thread scan never sees.
+      exclude: [
+        '@duckdb/duckdb-wasm',
+        '@huggingface/transformers',
+        '@huggingface/tokenizers',
+        'onnxruntime-web',
+        'pixi.js',
+      ],
       // apache-arrow is only reached via the dynamic import of ./duckdb, so
       // Vite's static scan misses it. Pre-bundle it explicitly so the dep URL
       // is stable when the agent's tool wrappers eventually fire.

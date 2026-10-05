@@ -44,8 +44,11 @@ import { isAbortError, type StreamChatMessage, type StreamChatOptions } from '..
 import { clampToolResultSize } from '../toolResultLimits';
 import type { ChatTrust } from '../../types/chat';
 import { LOCAL_GEMMA_ENDPOINT } from '../../types/llm';
+import { QWEN_SAMPLING } from '../localLlm/llmWorkerProtocol';
+import type { AttentionLog } from './attentionProbe';
 import {
   startKernelChatEngine,
+  type ZeosSampling,
   type ZeosChatEngine,
   type ZeosChatRun,
   type ZeosGateMode,
@@ -54,10 +57,56 @@ import {
 } from './zeosChatEngine';
 import { buildZeosImport, EXTERNAL, toolResultForZeos, TRUSTED } from './zeosHistory';
 import * as store from './zeosSessionStore';
+import { dispatchForZeos, zeosSystemPrompt } from './zeosPrompt';
 import { paramTypesFromTools, ZEOS_TOOL_CLASSES, zeosAgentTools } from './zeosToolClasses';
 
 /** Kernel ticks per `step` call: small, so tokens stream. */
 const STEP_TICKS = 8;
+/**
+ * `KernelConfig.theta_read` for this model: the mass a ring-3 segment must
+ * get over one 16-token block (16 decode steps, so out of 16) for the job to
+ * count as having read it. Measured on the real model (CLAUDE.md, "ZEOS Qwen
+ * 4B"): a tool result being read takes 1.5-5.9 a block at its peak, while a
+ * resident result nobody is using takes 0.6 at most. The kernel default, 0.2,
+ * sits inside that background, so it demoted on any long tool result.
+ * Dev override: localStorage `gda.zeos.thetaRead`.
+ */
+export const ZEOS_THETA_READ = 1.0;
+/**
+ * Qwen 3.5's recommended non-thinking sampling, as `QWEN_SAMPLING` for the
+ * transformers.js Qwen, but seeded by the kernel (ZEOS `Sampling`). Dev
+ * override: localStorage `gda.zeos.sampling` = `greedy`.
+ */
+export const ZEOS_SAMPLING: ZeosSampling = {
+  temperature: QWEN_SAMPLING.temperature,
+  topK: QWEN_SAMPLING.top_k,
+};
+
+function devSetting(key: string): string | null {
+  if (!import.meta.env.DEV) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function thetaRead(): number {
+  const raw = devSetting('gda.zeos.thetaRead');
+  const v = raw === null ? NaN : Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : ZEOS_THETA_READ;
+}
+
+function sampling(): ZeosSampling | null {
+  return devSetting('gda.zeos.sampling') === 'greedy' ? null : ZEOS_SAMPLING;
+}
+
+/** A fresh seed per run, so a retry can differ; `gda.zeos.seed` pins it (dev). */
+function runSeed(): number {
+  const raw = devSetting('gda.zeos.seed');
+  if (raw !== null && /^\d+$/.test(raw)) return Number(raw);
+  return Math.floor(Math.random() * 2 ** 31);
+}
 /** Tool calls one turn may make before the loop stops (as streamLocalGemma). */
 const MAX_TOOL_CALLS = 10;
 /** What the model reads when the user declines (ZEOS `DEFAULT_REFUSAL`). */
@@ -97,8 +146,11 @@ function engine(): Promise<ZeosChatEngine> {
         startKernelChatEngine(defaultModel(), {
           onStatus: (text) => store.setStatus('starting', text),
           onProgress: (p) => {
-            const pct = typeof p.percent === 'number' ? ` · ${Math.round(p.percent)}%` : '';
-            store.setStatus('starting', `Loading model${pct}`);
+            if (p.phase === 'session') return store.setStatus('starting', 'Loading model onto GPU');
+            const done = typeof p.bytes === 'number' ? p.bytes : 0;
+            const total = typeof p.bytes_total === 'number' ? p.bytes_total : 0;
+            const pct = total > 0 ? ` · ${Math.round((100 * done) / total)}%` : '';
+            if (p.phase === 'download') store.setStatus('starting', `Loading model${pct}`);
           },
         }));
     enginePromise = start().then(
@@ -269,8 +321,10 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   const gateMode: ZeosGateMode = config.zeosAttentionOnly ? 'attention' : 'strict';
   const tools: AgentToolSpec[] = zeosAgentTools(opts.tools ?? []);
   const features = { ...getFeatures(), runSubAgent: false };
-  const dispatch =
+  const baseDispatch =
     opts.toolDispatcher ?? ((name: string, input: unknown, sig?: AbortSignal) => runAgentTool(name, input, sig, features));
+  const dispatch = (name: string, input: unknown, sig?: AbortSignal): Promise<unknown> =>
+    dispatchForZeos(name, input, (n, i) => Promise.resolve(baseDispatch(n, i, sig)));
   const fmt = getPromptFormat('zeos-qwen', tools);
 
   let accumulated = '';
@@ -323,12 +377,16 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       await dropSession();
       store.resetConversation();
       store.setTrust({ gateMode });
+      const seed = runSeed();
       const run = await eng.open({
-        systemPrompt: renderQwenSystemContent(system, tools),
+        systemPrompt: renderQwenSystemContent(zeosSystemPrompt(system), tools),
         gateMode,
         toolClasses: ZEOS_TOOL_CLASSES,
         paramTypes: paramTypesFromTools(tools),
         thinking,
+        sampling: sampling(),
+        seed,
+        thetaRead: thetaRead(),
       });
       const s: Session = { run, key, segments: new Map(), toolCount: 0, integrity: TRUSTED, demotedBy: null };
       session = s;
@@ -350,6 +408,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     }
     const s = session!;
 
+    const turnStart = performance.now();
     await s.run.sendUser(last.content);
     const text = new ZeosTurnText(fmt, thinking, emit, emitHistory);
     let calls = 0;
@@ -357,7 +416,12 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     /** What the next tools.results arrival is, for "Demoted by …". */
     let pendingResultLabel: string | null = null;
 
-    const runCall = async (name: string, args: Record<string, unknown>): Promise<void> => {
+    const runCall = async (
+      name: string,
+      args: Record<string, unknown>,
+      how: ZeosToolLogEntry['how'],
+    ): Promise<void> => {
+      logToolCall({ name, args, how });
       const argsJson = JSON.stringify(args);
       const result = await dispatch(name, args, signal);
       const resultStr = clampToolResultSize(name, JSON.stringify(result));
@@ -408,7 +472,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
               onDone(accumulated);
               return;
             }
-            await runCall(e.name, e.arguments);
+            await runCall(e.name, e.arguments, e.sink === 'tools.effect' ? 'effect' : 'read');
             break;
           }
           case 'approval_required': {
@@ -435,8 +499,9 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
               return;
             }
             if (approved) {
-              await runCall(e.name, e.arguments);
+              await runCall(e.name, e.arguments, 'approved');
             } else {
+              logToolCall({ name: e.name, args: e.arguments, how: 'denied' });
               const refusal = JSON.stringify({ error: ZEOS_REFUSAL });
               text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
               s.toolCount += 1;
@@ -482,6 +547,18 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       last,
       { role: 'assistant', content: history || accumulated },
     ]);
+    if (import.meta.env.DEV) {
+      const decodeMs = firstTokenAt === null ? 0 : lastTokenAt - firstTokenAt;
+      const stats = {
+        firstTokenMs: firstTokenAt === null ? null : Math.round(firstTokenAt - turnStart),
+        outputTokens,
+        decodeTps: decodeMs > 0 ? Number(((outputTokens - 1) / (decodeMs / 1000)).toFixed(2)) : null,
+        turnMs: Math.round(performance.now() - turnStart),
+        toolCalls: calls,
+      };
+      console.debug(`[zeos] turn stats ${JSON.stringify(stats)}`);
+      await recordAttention(s.run);
+    }
     if (onUsage) {
       const decodeMs = firstTokenAt === null ? 0 : lastTokenAt - firstTokenAt;
       onUsage({
@@ -502,6 +579,49 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     }
     onError(err instanceof Error ? err : new Error(String(err)));
   }
+}
+
+/**
+ * Dev: with the attention probe on, keep each turn's measurements on
+ * `window.__zeosAttention` (an array of logs) and print the block maxima per
+ * ring-3 segment.
+ */
+async function recordAttention(run: ZeosChatRun): Promise<void> {
+  if (devSetting('gda.zeos.attentionLog') === null || !run.attentionLog) return;
+  const log = await run.attentionLog().catch((err) => {
+    console.warn('[zeos] attention probe read failed:', err);
+    return null;
+  });
+  if (!log) return;
+  const w = window as unknown as { __zeosAttention?: AttentionLog[] };
+  (w.__zeosAttention ??= []).push(log);
+  const maxBySeg: Record<string, number> = {};
+  for (const b of log.blocks) {
+    for (const [id, m] of Object.entries(b.segs)) {
+      if (log.segments[id]?.ring === EXTERNAL) maxBySeg[id] = Math.max(maxBySeg[id] ?? 0, m);
+    }
+  }
+  console.debug(
+    `[zeos] attention ${JSON.stringify({ steps: log.steps.length, blocks: log.blocks.length, ring3BlockMax: maxBySeg })}`,
+  );
+}
+
+/**
+ * One tool call the loop settled: run from `tools.read` or `tools.effect`
+ * (the kernel let it land), run on the user's approval after the kernel
+ * refused it, or denied.
+ */
+export interface ZeosToolLogEntry {
+  name: string;
+  args: Record<string, unknown>;
+  how: 'read' | 'effect' | 'approved' | 'denied';
+}
+
+/** Dev/e2e: every settled tool call, on `window.__zeosToolLog`. */
+function logToolCall(entry: ZeosToolLogEntry): void {
+  if (!import.meta.env.DEV) return;
+  const w = globalThis as { __zeosToolLog?: ZeosToolLogEntry[] };
+  (w.__zeosToolLog ??= []).push(entry);
 }
 
 /** Which model id the chat is on, for callers that only have the config. */

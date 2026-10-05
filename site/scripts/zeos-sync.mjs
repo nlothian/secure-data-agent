@@ -40,15 +40,17 @@ const PACKAGES = ['zeos', 'zeos-coop-count-web'];
 const CASE_ROOTS = ['demo/coop-count/cases', 'demo/coop-count-web/cases'];
 const WEB = 'demo/coop-count-web/web';
 /**
- * JS modules vendored verbatim (plus a header). Add a model-thread worker
- * here (e.g. `opt_zeos_worker.js`) when one is ready to plug into
- * `startZeos({ modelWorkerUrl })`. Missing optional files are skipped.
+ * JS modules vendored verbatim (plus a header). `opt_zeos_worker.js` is the
+ * real model (src/workers/zeosOptModel.worker.ts loads it); it imports
+ * `encodePlain` and `sampleToken` from `transformers_worker.js`. Missing
+ * optional files are skipped.
  */
 const VENDOR = [
   { file: 'frames.js', required: true },
   { file: 'model_channel.js', required: true },
   { file: 'stub_worker.js', required: true },
-  { file: 'opt_zeos_worker.js', required: false },
+  { file: 'opt_zeos_worker.js', required: true },
+  { file: 'transformers_worker.js', required: true },
 ];
 
 function git(...args) {

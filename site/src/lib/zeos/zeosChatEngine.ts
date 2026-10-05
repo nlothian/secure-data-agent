@@ -7,9 +7,11 @@
  */
 import type { LocalGemmaModel } from '../localLlm/models';
 import { modelRef, startZeos, type ZeosHandle, type ZeosKernel } from './zeosHost';
-import { zeosModelThreadFor } from './zeosModelWorker';
+import { createZeosLoadProgress, zeosModelThreadFor } from './zeosModelWorker';
 import type { ToolClassEntry } from './zeosToolClasses';
 import type { ZeosImportTurn } from './zeosHistory';
+import { installAttentionProbe, readAttentionLog, type AttentionLog } from './attentionProbe';
+import { detectWebGpu } from '../localLlm/webgpu';
 
 /** A segment as `ChatRun.segment_info` reports it. */
 export interface ZeosSegment {
@@ -60,12 +62,28 @@ export type ZeosEvent =
  */
 export type ZeosGateMode = 'strict' | 'attention';
 
+/**
+ * Seeded sampling (ZEOS `Sampling`): every step draws `u` from a
+ * `random.Random` seeded by the run's seed, so a run replays exactly. `null`
+ * is greedy.
+ */
+export interface ZeosSampling {
+  temperature: number;
+  topK: number;
+}
+
 export interface ZeosChatOpenOptions {
   systemPrompt: string;
   gateMode: ZeosGateMode;
   toolClasses: Readonly<Record<string, ToolClassEntry>>;
   paramTypes: Record<string, Record<string, string>>;
   thinking: boolean;
+  /** `null` (the default) is greedy. */
+  sampling?: ZeosSampling | null;
+  /** The kernel's seed (`KernelConfig.seed`), which also seeds sampling. */
+  seed?: number;
+  /** `KernelConfig.theta_read`: a tool result's mass over one block that demotes. */
+  thetaRead?: number;
 }
 
 export interface ZeosChatRun {
@@ -77,6 +95,8 @@ export interface ZeosChatRun {
   deliverToolResult(text: string): Promise<void>;
   deliverRefusal(text?: string): Promise<void>;
   journalLines(): Promise<string[]>;
+  /** Dev measurement: per-step and per-block attention on segments (./attentionProbe.ts). */
+  attentionLog?(): Promise<AttentionLog>;
   close(): Promise<void>;
 }
 
@@ -127,6 +147,9 @@ class KernelChatRun implements ZeosChatRun {
   journalLines() {
     return this.m<string[]>('journal_lines');
   }
+  attentionLog() {
+    return readAttentionLog(this.kernel, this.run);
+  }
   async close() {
     try {
       await this.m<void>('close');
@@ -147,21 +170,59 @@ export async function startKernelChatEngine(
   hooks: StartEngineHooks = {},
 ): Promise<ZeosChatEngine> {
   const thread = zeosModelThreadFor(model);
-  const { kernel, model: attached } = await startZeos({
-    onStatus: hooks.onStatus,
-    onLog: (stream, text) => {
-      if (stream === 'stderr') console.warn('[zeos]', text);
-    },
-    model: {
-      modelWorker: thread.modelWorker,
-      init: thread.init,
-      onProgress: hooks.onProgress,
-    },
-  });
+  if (!thread.stub) {
+    // No WebAssembly fallback for this export: fail before booting Pyodide.
+    const gpu = await detectWebGpu();
+    if (!gpu.supported) {
+      throw new Error(
+        `${model.label} needs WebGPU, which is not available here: ${gpu.reason ?? 'no adapter'}. ` +
+          'It has no WebAssembly fallback.',
+      );
+    }
+    if (gpu.f16 === false) {
+      throw new Error(`${model.label} needs a GPU with shader-f16 for its q4f16 weights.`);
+    }
+  }
+  const progress = thread.stub ? null : createZeosLoadProgress(model);
+  const began = performance.now();
+  let started;
+  try {
+    started = await startZeos({
+      onStatus: hooks.onStatus,
+      onLog: (stream, text) => {
+        if (stream === 'stderr') console.warn('[zeos]', text);
+      },
+      model: {
+        modelWorker: thread.modelWorker,
+        init: thread.init,
+        onProgress: (p) => {
+          progress?.onProgress(p);
+          hooks.onProgress?.(p);
+        },
+        onActivity: import.meta.env.DEV ? recordActivity : undefined,
+      },
+    });
+  } finally {
+    progress?.done();
+  }
+  const { kernel, model: attached } = started;
+  if (import.meta.env.DEV) {
+    console.debug(`[zeos] ${thread.label} ready in ${Math.round(performance.now() - began)} ms`);
+    // DevTools: `await __zeosKernel.exec('…')` runs Python in the kernel worker.
+    (globalThis as { __zeosKernel?: ZeosKernel }).__zeosKernel = kernel;
+  }
+  const probe = import.meta.env.DEV && attentionProbeEnabled();
+  if (probe) await installAttentionProbe(kernel);
   return {
     backend: attached.backend,
     stub: thread.stub,
     async open(opts) {
+      const sampling = opts.sampling
+        ? await kernel.call<ZeosHandle>('zeos_coop_count_web.chat_machine', 'Sampling', [], {
+            temperature: opts.sampling.temperature,
+            top_k: opts.sampling.topK,
+          })
+        : null;
       const run = await kernel.call<ZeosHandle>(
         'zeos_coop_count_web.chat',
         'open_chat',
@@ -172,9 +233,37 @@ export async function startKernelChatEngine(
           thinking: opts.thinking,
           param_types: opts.paramTypes,
           gate_mode: opts.gateMode,
+          ...(sampling ? { sampling } : {}),
+          ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+          ...(opts.thetaRead !== undefined ? { theta_read: opts.thetaRead } : {}),
         },
       );
+      if (sampling) await kernel.release(sampling).catch(() => undefined);
+      if (probe) await kernel.call('_zeos_attention_probe', 'attach', [run]);
       return new KernelChatRun(kernel, run);
     },
   };
+}
+
+/**
+ * Dev: the model thread's per-run timings (`{phase, count, length, ms}` from
+ * OptZeosWorker's `onActivity`), on `window.__zeosActivity`, so the time a
+ * decode step spends in the graph can be told from the kernel's and the
+ * channel's share.
+ */
+function recordActivity(a: Record<string, unknown>): void {
+  if (typeof a.ms !== 'number') return;
+  const w = globalThis as { __zeosActivity?: Record<string, unknown>[] };
+  const log = (w.__zeosActivity ??= []);
+  log.push({ phase: a.phase, count: a.count, length: a.length, ms: Math.round(a.ms as number), at: Math.round(performance.now()) });
+  if (log.length > 5000) log.splice(0, log.length - 5000);
+}
+
+/** Dev: localStorage `gda.zeos.attentionLog` turns on the attention probe. */
+function attentionProbeEnabled(): boolean {
+  try {
+    return localStorage.getItem('gda.zeos.attentionLog') != null;
+  } catch {
+    return false;
+  }
 }

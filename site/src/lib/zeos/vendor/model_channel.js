@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/model_channel.js
-// at b44f668d23ba3dfbc890559d2e2dca74bd403790 by site/scripts/zeos-sync.mjs.
+// at 5ab750cf377f020b19300fdeef7a78bf62ce36f9 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -131,10 +131,12 @@ export class SyncModelWorker {
   }
 
   decodeStep(jobId, opts) {
-    const { allowedBlocks = null, allowedTokens = null } = opts ?? {};
-    return this.call("decodeStep", jobId, {
+    const { allowedBlocks = null, allowedTokens = null, sample = null } = opts ?? {};
+    const args = {
       allowedBlocks: allowedBlocks === null ? null : Uint8Array.from(allowedBlocks),
       allowedTokens: allowedTokens === null ? null : Uint8Array.from(allowedTokens),
-    });
+    };
+    if (sample !== null) args.sample = { temperature: sample.temperature, topK: sample.topK, u: sample.u };
+    return this.call("decodeStep", jobId, args);
   }
 }

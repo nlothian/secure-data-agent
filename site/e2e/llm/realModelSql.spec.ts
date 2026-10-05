@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 // files / absent WebGPU is a SKIP, not a failure — consistent with the
 // project stance that e2e is environmentally red, not a regression signal.
 
-type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b' | 'qwen3.5-4b';
+type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b' | 'qwen3.5-4b' | 'zeos-qwen3.5-4b';
 
 // Kept in lockstep with src/lib/localLlm/models.ts. That module reads
 // import.meta.env, so it is not imported from Node here.
@@ -41,10 +41,18 @@ const MODELS: Record<ModelId, { repo: string; label: string; fetchArg: string }>
     label: 'Qwen 3.5 4B',
     fetchArg: 'qwen4b',
   },
+  // Runs under the ZEOS kernel (src/lib/zeos/streamZeos.ts), not in the
+  // transformers.js worker: loaded with warmZeos, not ensureLoaded.
+  'zeos-qwen3.5-4b': {
+    repo: 'metacognitionai/Qwen3.5-4B-ZEOS-OPT',
+    label: 'ZEOS Qwen 4B',
+    fetchArg: 'zeosq4b',
+  },
 };
 
 const MODEL_ID = (process.env.GDA_E2E_MODEL ?? 'gemma-4-e4b') as ModelId;
 const MODEL = MODELS[MODEL_ID];
+const IS_ZEOS = MODEL_ID === 'zeos-qwen3.5-4b';
 if (!MODEL) {
   throw new Error(
     `GDA_E2E_MODEL=${MODEL_ID} is not one of: ${Object.keys(MODELS).join(', ')}`,
@@ -154,7 +162,12 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
     // or failing run shows prefill/reuse numbers instead of just a timeout.
     page.on('console', (msg) => {
       const text = msg.text();
-      if (text.includes('[llmService] generate stats') || text.includes('[llm.worker]')) {
+      if (
+        text.includes('[llmService] generate stats') ||
+        text.includes('[llm.worker]') ||
+        text.includes('[zeos]') ||
+        text.includes('[realModelSql]')
+      ) {
         console.log(`  [browser] ${text.split('\n')[0]}`);
       }
     });
@@ -194,10 +207,22 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
     // Await the actual transformers.js/WebGPU load deterministically:
     // ensureLoaded() is idempotent and resolves only once the model is fully
     // loaded (joining the load the selection already kicked off).
-    await page.evaluate(async (id) => {
-      const svc = await import('/src/lib/localLlm/llmService.ts');
-      await svc.ensureLoaded(id);
-    }, MODEL_ID);
+    if (IS_ZEOS) {
+      // The kernel needs SharedArrayBuffer + Atomics.wait, so COOP/COEP must
+      // hold on the e2e server too.
+      expect(await page.evaluate(() => globalThis.crossOriginIsolated)).toBe(true);
+      // Boots the Pyodide kernel worker and the OPT+ZEOS model thread (joins
+      // the start the selection already kicked off).
+      await page.evaluate(async () => {
+        const z = await import('/src/lib/zeos/streamZeos.ts');
+        await z.warmZeos();
+      });
+    } else {
+      await page.evaluate(async (id) => {
+        const svc = await import('/src/lib/localLlm/llmService.ts');
+        await svc.ensureLoaded(id);
+      }, MODEL_ID);
+    }
 
     // Model committed + loaded → the composer is no longer "unconfigured".
     const composer = page.locator('[data-tour-id="chat.messageEntry"]');
@@ -223,13 +248,30 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
     // auto-executes. This pump is a safety net against the rare interleave
     // where a tool reaches the gate before that mode flip commits; play()
     // is idempotent and only resolves a pending gate / re-asserts running.
+    //
+    // ZEOS: read-only inline RunSQL lands on tools.read and needs no
+    // approval. If the model reaches for an effect anyway (say it writes the
+    // query to a file first), the kernel refuses it and the approval card
+    // appears; approve it so the SQL flow can finish, and log it. The gate
+    // itself is e2e/llm/zeosInjection.spec.ts's subject, not this one's.
     const pump = setInterval(() => {
       page
-        .evaluate(async () => {
+        .evaluate(async (zeos) => {
           const dbg = await import('/src/lib/toolDebugger.ts');
           const snap = dbg.getSnapshot();
           if (snap.mode !== 'running' || snap.pending) dbg.play();
-        })
+          if (zeos) {
+            const z = await import('/src/lib/zeos/zeosSessionStore.ts');
+            const pending = z.getSnapshot().pending;
+            if (pending) {
+              console.warn(
+                `[realModelSql] approving ZEOS effect ${pending.name}: ${pending.reason} ` +
+                  JSON.stringify(pending.args).slice(0, 600).replace(/\n/g, ' '),
+              );
+              z.approve();
+            }
+          }
+        }, IS_ZEOS)
         .catch(() => {
           /* page navigating/closing — ignore */
         });
