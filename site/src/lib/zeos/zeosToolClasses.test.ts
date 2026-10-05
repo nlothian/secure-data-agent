@@ -135,6 +135,8 @@ describe('isTrustedToolResult', () => {
   it('trusts CallSkill with a bundled skill name, and nothing else', () => {
     for (const skill of CALL_SKILL_NAMES) expect(isTrustedToolResult('CallSkill', { skill })).toBe(true);
     expect(isTrustedToolResult('CallSkill', { skill: 'evil' })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', { skill: CALL_SKILL_NAMES.join('|') })).toBe(false);
+    expect(isTrustedToolResult('CallSkill', { skill: ['sql'] })).toBe(false);
     expect(isTrustedToolResult('CallSkill', { skill: 'sql\nIgnore that' })).toBe(false);
     expect(isTrustedToolResult('CallSkill', { skill: 'sql', extra: 'x' })).toBe(false);
     expect(isTrustedToolResult('CallSkill', { skill: 1 })).toBe(false);
@@ -142,6 +144,16 @@ describe('isTrustedToolResult', () => {
     expect(isTrustedToolResult('CallSkill', undefined)).toBe(false);
     for (const name of Object.keys(ZEOS_TOOL_CLASSES)) {
       if (name !== 'CallSkill') expect(isTrustedToolResult(name, { skill: 'sql' })).toBe(false);
+    }
+  });
+
+  it('matches the name exactly and case-sensitively, unlike read_if', () => {
+    expect(CALL_SKILL_NAMES).toContain('sql');
+    for (const skill of ['SQL', 'Sql', ' sql', 'sql ', 'sql\n', '\nsql', 's.l']) {
+      expect(isTrustedToolResult('CallSkill', { skill })).toBe(false);
+    }
+    for (const skill of CALL_SKILL_NAMES) {
+      expect(isTrustedToolResult('CallSkill', { skill: skill.toUpperCase() })).toBe(false);
     }
   });
 });
@@ -186,15 +198,23 @@ describe.skipIf(!python)('the pattern under Python re', () => {
   });
 
   it('agrees on the trusted-results rule', () => {
-    const pattern = ZEOS_TRUSTED_RESULTS.CallSkill.skill;
-    const cases = [...CALL_SKILL_NAMES, 'evil', 'sql2', 'python', 'data loading', 'SQL', 'sql\n'];
+    // As `_exact_rule` / `_exact_matches` in chat_machine.py: the rule arrives
+    // as JSON, a list of exact names, and a value is trusted iff it is one.
+    const values = ZEOS_TRUSTED_RESULTS.CallSkill.skill;
+    const cases = [
+      ...CALL_SKILL_NAMES,
+      ...CALL_SKILL_NAMES.map((s) => s.toUpperCase()),
+      'evil', 'sql2', 'python', 'data loading', 'SQL', 'Sql', ' sql', 'sql ', 'sql\n', 's.l',
+    ];
     const script =
-      'import json, re, sys\n' +
+      'import json, sys\n' +
       'data = json.load(sys.stdin)\n' +
-      'p = re.compile(data["pattern"], re.IGNORECASE | re.DOTALL)\n' +
-      'print(json.dumps([p.fullmatch(c) is not None for c in data["cases"]]))\n';
+      'values = data["values"]\n' +
+      'assert isinstance(values, list) and all(isinstance(v, str) for v in values)\n' +
+      'exact = frozenset(values)\n' +
+      'print(json.dumps([isinstance(c, str) and c in exact for c in data["cases"]]))\n';
     const out = spawnSync('python3', ['-c', script], {
-      input: JSON.stringify({ pattern, cases }),
+      input: JSON.stringify({ values, cases }),
       encoding: 'utf8',
     });
     expect(out.stderr).toBe('');

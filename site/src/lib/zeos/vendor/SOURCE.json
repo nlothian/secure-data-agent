@@ -1,7 +1,8 @@
 {
-  "repo": "zeos-task2-transformers",
-  "branch": "feat/zeos-opt-chat",
-  "commit": "dfe8b126405ba62bf3ea44817ed013ec36b59b05",
+  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-integrate",
+  "remote": "https://github.com/metacognitionai/zeos.git",
+  "branch": "feat/zeos-integrate",
+  "commit": "ddbe6620460cfc3c975b2e68963dc80176609457",
   "dirty": false,
   "files": {
     "frames.js": "292b9837b4ef96e6c205ec5a7c143e62d0ab5632a89ef62bf86b250feabb1377",

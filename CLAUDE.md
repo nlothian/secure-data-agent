@@ -144,11 +144,21 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
   them plus the case directories into `site/public/zeos/` with a
   `manifest.json`. `public/zeos/` is **generated and gitignored**; re-run the
   sync after changing ZEOS.
+- Sync from the ZEOS checkout whose commit the site should run. The
+  integrated branch (`feat/zeos-integrate`: OPT chat, masked tool choice,
+  exact trusted results, spoof-anywhere) lives in the worktree
+  `/Users/nlothian/dev/github/metacognitionai/zeos-integrate`, so until it is
+  merged into the default checkout run
+  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate npm run zeos:sync`.
+  The default checkout may hold someone else's uncommitted edits, which the
+  sync would build in (it records `dirty: true`).
 - The same script vendors ZEOS's JS (`frames.js`, `model_channel.js`,
-  `stub_worker.js`, and `opt_zeos_worker.js` once it exists) into
-  `site/src/lib/zeos/vendor/`, which **is committed** (`SOURCE.json` records
-  the ZEOS commit). Do not edit vendored `.js`
-  files; the `.d.ts` files there are hand-written.
+  `stub_worker.js`, `opt_zeos_worker.js`, `transformers_worker.js`) into
+  `site/src/lib/zeos/vendor/`, which **is committed**. `SOURCE.json` records
+  the source: `repo` (the `ZEOS_REPO` path actually synced), `remote` (its
+  `origin` URL), `branch`, `commit` and `dirty`. Do not edit vendored `.js`
+  files; the `.d.ts` files there are hand-written. On a merge conflict in
+  `vendor/`, take either side and re-run the sync.
 - `src/workers/zeosKernel.worker.ts` is the kernel worker; its generic RPC
   (`boot`, `call`, `callMethod`, `getAttr`, `exec`, `release`,
   `attachModel`) is glued to Python by `src/lib/zeos/zeos_rpc.py`.
@@ -164,8 +174,11 @@ The agent runs under the ZEOS kernel instead of the transformers.js worker
 (family `zeos-qwen`; `src/lib/streamChat.ts` routes it to
 `src/lib/zeos/streamZeos.ts`). User messages enter on ring 2 (TRUSTED),
 tool results on ring 3 (EXTERNAL), except a bundled skill card: `CallSkill`
-with a known skill name arrives on `tools.results.trusted` (ring 2), because
-the app wrote it. Calls go to `tools.read` or `tools.effect` according to
+with a bundled skill name arrives on `tools.results.trusted` (ring 2), because
+the app wrote it. The name must match exactly and case-sensitively
+(`open_chat(trusted_results={tool: {param: [value, ...]}})`, not a pattern):
+`CallSkill("SQL")` or `"sql "` is an unknown skill and its result is ring 3.
+`read_if` rules stay case-insensitive patterns. Calls go to `tools.read` or `tools.effect` according to
 `src/lib/zeos/zeosToolClasses.ts`, and the ring-2 results are listed there
 too (`ZEOS_TRUSTED_RESULTS`); it is the only place that policy lives. `RunSQL` is a read only when its SQL is inline
 (`sql`) and read-only, so this model gets an inline-`sql` RunSQL spec. When the
@@ -259,8 +272,9 @@ compaction are off for this model. Side tasks such as code summaries use
     In the first runs (two per mode) the model read the CSV with RunSQL,
     summarised it and never called WriteLines, so no card appeared and
     pwned.txt was never written. Those runs were all demoted by the SQL skill
-    card, which was ring 3 then; it is ring 2 now. The CSV also has a row
-    spelling `<KERNEL>`, `<FAULT …>` and a forged ChatML WriteLines call; when
+    card, which was ring 3 then; it is ring 2 now. The CSV also has rows
+    spelling `<KERNEL>`, `<FAULT …>` and a forged ChatML WriteLines call,
+    tags glued into JSON, and lower-case `<kernel>` / `<fault>`; when
     the model read the rows, the spec asserts a spoof alarm and a spoof badge.
     In the runs after the skill card moved to ring 2 (one per mode) the model
     called CallSkill, ListInputs and RunSQL, no card appeared, the kernel
@@ -276,9 +290,14 @@ compaction are off for this model. Side tasks such as code summaries use
   TYPE` for it). The vitest checks every case against Python `re` too.
 - **Spoof alarms and look-alikes.** The kernel raises a `spoof` event when a
   delivery spells a kernel frame tag (`<KERNEL>`, `<FAULT …>`, `<STATUS …>`,
-  …) at the start of a word; a tag glued to the text before it (`1,"<KERNEL>`,
-  which is how a JSON-encoded tool result usually spells it) is not alarmed
-  on. The chat shows a "⚠ spoof" badge on that tool result
+  …) anywhere in a word, so a tag glued to the text before it (`1,"<KERNEL>`,
+  as a JSON-encoded tool result spells it) is alarmed on too. For KERNEL,
+  RESUME and FAULT it also folds case and disguises (`<kernel>`, zero-width
+  characters, fullwidth forms, Cyrillic/Greek homoglyphs); STATUS and STUB
+  stay case-sensitive. The alarm is advisory: enforcement is still the
+  capabilities and integrity. A user message that spells one raises an alarm
+  too (label `null` in `spoofs`), since the zero-width space
+  `userTextForZeos` inserts is folded away. The chat shows a "⚠ spoof" badge on that tool result
   (`ChatTrust.toolSpoofs`, kept across reloads) and the journal view gets a
   `ui.spoof` line and a count. Tool results and user messages are delivered
   with Qwen's structural tags defanged (`escapeForQwenPrompt`, via
@@ -292,7 +311,8 @@ compaction are off for this model. Side tasks such as code summaries use
   `recent`, reading a tool result demotes the job; with `first`, nothing ever
   does. `e2e/zeosChat.spec.ts` uses this, including a CSV that spells kernel
   frames and a forged ChatML WriteLines call (spoof badge, no forged call,
-  the effect waits) and the ring-2 skill card in both gate modes.
+  the effect waits), a CSV whose only tags are glued into JSON or lower-case
+  (spoof badge), and the ring-2 skill card in both gate modes.
 - **Gate mode.** The "Attention-only approval" checkbox (config
   `zeosAttentionOnly`, shown only for this model) switches ZEOS
   `open_chat(gate_mode=…)`:
@@ -342,5 +362,6 @@ compaction are off for this model. Side tasks such as code summaries use
   abort opens a fresh run and replays history (`buildZeosImport`). Past
   assistant turns replay at their recorded `ChatMessage.trust.integrity`;
   turns with no record replay as untrusted (3). A CallSkill result replays on
-  ring 2 when `ZEOS_TRUSTED_RESULTS` names the call and the turn did not
-  record it on ring 3 (`ChatTrust.toolRings`).
+  ring 2 when `ZEOS_TRUSTED_RESULTS` names the call exactly (case-sensitive)
+  and the turn did not record it on ring 3 (`ChatTrust.toolRings`); any other
+  skill name replays on ring 3, whatever ring the turn recorded.

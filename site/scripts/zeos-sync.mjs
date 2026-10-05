@@ -14,7 +14,8 @@
  * 3. The JavaScript modules the site imports, copied into
  *    `src/lib/zeos/vendor/` with a header naming the source commit.
  * 4. `public/zeos/manifest.json`: wheel paths + sha256, case file lists, the
- *    ZEOS commit, and whether its tree was dirty.
+ *    ZEOS checkout path, its origin remote, commit, and whether its tree was
+ *    dirty. `src/lib/zeos/vendor/SOURCE.json` records the same source.
  *
  * `public/zeos/` is generated and gitignored; `src/lib/zeos/vendor/` is
  * committed (see CLAUDE.md).
@@ -77,6 +78,12 @@ if (!fs.existsSync(path.join(zeosRepo, 'pyproject.toml'))) {
 }
 
 const commit = git('rev-parse', 'HEAD');
+let remote = null;
+try {
+  remote = git('remote', 'get-url', 'origin') || null;
+} catch {
+  // No origin: the path alone names the checkout.
+}
 const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
 // uv.lock churn alone does not change what is built.
 const dirty = git('status', '--porcelain', '--', 'src', 'demo')
@@ -147,12 +154,16 @@ for (const { file, required } of VENDOR) {
 }
 fs.writeFileSync(
   path.join(vendorOut, 'SOURCE.json'),
-  JSON.stringify({ repo: 'zeos-task2-transformers', branch, commit, dirty: dirty.length > 0, files: vendored }, null, 2) + '\n',
+  JSON.stringify(
+    { repo: zeosRepo, remote, branch, commit, dirty: dirty.length > 0, files: vendored },
+    null,
+    2,
+  ) + '\n',
 );
 
 // 4. manifest
 const manifest = {
-  zeos: { branch, commit, dirty: dirty.length > 0 },
+  zeos: { repo: zeosRepo, remote, branch, commit, dirty: dirty.length > 0 },
   wheels,
   cases,
 };

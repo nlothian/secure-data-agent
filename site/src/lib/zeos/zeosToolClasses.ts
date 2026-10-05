@@ -23,7 +23,8 @@
  * `ZEOS_TRUSTED_RESULTS` is the other half of the policy: which results the
  * app wrote itself, so they arrive on `tools.results.trusted` (ring 2)
  * instead of `tools.results` (ring 3). The machine picks the pipe from the
- * call (`open_chat(trusted_results=…)`), and `streamZeos` delivers with
+ * call (`open_chat(trusted_results=…)`, an exact, case-sensitive match on the
+ * skill name, not a pattern), and `streamZeos` delivers with
  * `trusted` from `isTrustedToolResult`; ZEOS refuses a delivery where the two
  * disagree.
  */
@@ -152,29 +153,40 @@ export function classifyToolCall(
   return argsMatch(entry.read_if, args) ? 'read' : 'effect';
 }
 
-/** A rule as `open_chat(trusted_results=…)` takes it: args exactly these, each fully matching. */
-export type TrustedResultRule = Record<string, string>;
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
-}
+/**
+ * A rule as `open_chat(trusted_results=…)` takes it: args exactly these keys,
+ * each a string equal to one of the listed values. The comparison is exact and
+ * case-sensitive, never a pattern (unlike `read_if`).
+ */
+export type TrustedResultRule = Record<string, readonly string[]>;
 
 /**
- * Results the app authored, delivered on ring 2. Only `CallSkill` with one of
- * the bundled skill names: its result is a reference card shipped with the
- * app (or, for a name that matches only case-insensitively, the app's own
- * "Unknown skill" error). Anything a tool fetched from data, files, code or
- * the network stays on ring 3.
+ * Results the app authored, delivered on ring 2. Only `CallSkill` with a
+ * bundled skill name spelled exactly: its result is a reference card shipped
+ * with the app. `SQL`, ` sql` or `sql\n` is not a bundled name, so its result
+ * (the "Unknown skill" error, which echoes the name) stays on ring 3, as does
+ * anything a tool fetched from data, files, code or the network.
  */
 export const ZEOS_TRUSTED_RESULTS: Readonly<Record<string, TrustedResultRule>> = {
-  CallSkill: { skill: `(?:${CALL_SKILL_NAMES.map(escapeRegExp).join('|')})` },
+  CallSkill: { skill: CALL_SKILL_NAMES },
 };
 
-function argsMatch(rule: Readonly<Record<string, string>>, args: Record<string, unknown> | undefined): boolean {
-  if (!args) return false;
+function sameKeys(rule: object, args: Record<string, unknown>): boolean {
   const keys = Object.keys(args).sort();
   const params = Object.keys(rule).sort();
-  if (keys.length !== params.length || keys.some((k, i) => k !== params[i])) return false;
+  return keys.length === params.length && keys.every((k, i) => k === params[i]);
+}
+
+function exactArgsMatch(rule: TrustedResultRule, args: Record<string, unknown> | undefined): boolean {
+  if (!args || !sameKeys(rule, args)) return false;
+  return Object.entries(rule).every(([param, values]) => {
+    const value = args[param];
+    return typeof value === 'string' && values.includes(value);
+  });
+}
+
+function argsMatch(rule: Readonly<Record<string, string>>, args: Record<string, unknown> | undefined): boolean {
+  if (!args || !sameKeys(rule, args)) return false;
   for (const [param, pattern] of Object.entries(rule)) {
     const value = args[param];
     if (typeof value !== 'string') return false;
@@ -193,7 +205,7 @@ export function isTrustedToolResult(
   table: Readonly<Record<string, TrustedResultRule>> = ZEOS_TRUSTED_RESULTS,
 ): boolean {
   const rule = table[name];
-  return rule !== undefined && argsMatch(rule, args);
+  return rule !== undefined && exactArgsMatch(rule, args);
 }
 
 /** Tools this model does not get in v1. */
