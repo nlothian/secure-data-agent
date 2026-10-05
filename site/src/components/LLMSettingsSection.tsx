@@ -8,6 +8,7 @@ import {
 import ModelPickerCell from './ModelPickerCell';
 import useLLMConfig from '../hooks/useLLMConfig';
 import useLocalGemmaSwitcher from '../hooks/useLocalGemmaSwitcher';
+import useModelSwitchBlocked from '../hooks/useModelSwitchBlocked';
 import useProviderModels, { type ProviderModelsEntry } from '../hooks/useProviderModels';
 import {
   BUILT_IN_PROVIDERS,
@@ -504,6 +505,7 @@ function LocalGemmaRow({
   const rowStyle = isLast ? { ...styles.row, ...styles.rowLast } : styles.row;
   const [gpuStatus, setGpuStatus] = useState<WebGpuStatus | null>(null);
   const switcher = useLocalGemmaSwitcher({ loadOnApply: false });
+  const switchBlocked = useModelSwitchBlocked();
 
   useEffect(() => {
     let cancelled = false;
@@ -535,10 +537,10 @@ function LocalGemmaRow({
         value={LOCAL_GEMMA_ENDPOINT}
         checked={isActive}
         onChange={handleRadioChange}
-        disabled={!supported || checking}
+        disabled={!supported || checking || switchBlocked !== null}
         style={styles.radio}
         aria-label="Use a local model (WebGPU)"
-        title={!supported && reason ? reason : undefined}
+        title={!supported && reason ? reason : (switchBlocked ?? undefined)}
       />
       <div style={styles.middle}>
         <div style={styles.builtInLabel}>Local model (WebGPU)</div>
@@ -557,7 +559,8 @@ function LocalGemmaRow({
         <select
           value={selectedId}
           onChange={(e) => onPickModel(e.target.value as LocalGemmaId)}
-          disabled={!supported}
+          disabled={!supported || switchBlocked !== null}
+          title={switchBlocked ?? undefined}
           aria-label="Local model"
           style={styles.selectEl}
         >
@@ -610,6 +613,7 @@ export default function LLMSettingsSection() {
     removeCustomEndpoint,
   } = useLLMConfig();
   const { getEntry, refresh } = useProviderModels();
+  const switchBlocked = useModelSwitchBlocked();
 
   if (!ready) return null;
 
@@ -617,7 +621,13 @@ export default function LLMSettingsSection() {
   const localSelectedId = resolveActiveLocalModelIdOrDefault(config);
 
   const handleLocalPickModel = (id: LocalGemmaId): void => {
+    if (switchBlocked) return;
     setModel(LOCAL_GEMMA_ENDPOINT, id);
+  };
+  // Switching the active endpoint while a reply streams would unload its model.
+  const activate = (url: string): void => {
+    if (switchBlocked) return;
+    setActiveEndpoint(url);
   };
 
   const total = BUILT_IN_PROVIDERS.length + 1 + config.customEndpoints.length;
@@ -631,6 +641,11 @@ export default function LLMSettingsSection() {
       <p style={styles.caption}>
         Select a provider and enter its API key. Keys are stored locally in your browser.
       </p>
+      {switchBlocked ? (
+        <p style={styles.caption} role="status" data-testid="model-switch-blocked">
+          {switchBlocked}
+        </p>
+      ) : null}
 
       <div style={styles.list} role="radiogroup" aria-label="Active LLM provider">
         {BUILT_IN_PROVIDERS.map((provider, index) => {
@@ -646,7 +661,9 @@ export default function LLMSettingsSection() {
                 name="llm-active"
                 value={provider.url}
                 checked={isActive}
-                onChange={() => setActiveEndpoint(provider.url)}
+                onChange={() => activate(provider.url)}
+                disabled={switchBlocked !== null && !isActive}
+                title={switchBlocked ?? undefined}
                 style={styles.radio}
                 aria-label={`Use ${provider.label}`}
               />
@@ -696,7 +713,7 @@ export default function LLMSettingsSection() {
               apiKey={apiKey}
               model={model}
               modelsEntry={getEntry(endpoint.url || endpoint.id)}
-              onActivate={() => setActiveEndpoint(endpoint.url)}
+              onActivate={() => activate(endpoint.url)}
               onPatch={(patch) => updateCustomEndpoint(endpoint.id, patch)}
               onRemove={() => removeCustomEndpoint(endpoint.id)}
               onSetKey={(next) => {

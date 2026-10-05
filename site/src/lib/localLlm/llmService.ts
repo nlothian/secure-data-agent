@@ -77,6 +77,7 @@ function failAllPending(message: string): void {
  * (and has to load the model again).
  */
 function recycleWorker(reason: string): void {
+  clearIdleUnload();
   const w = worker;
   worker = null;
   loadedModelId = null;
@@ -144,6 +145,15 @@ async function assertWebGpuReady(): Promise<void> {
 }
 
 export async function ensureLoaded(modelId: string): Promise<void> {
+  clearIdleUnload();
+  try {
+    await ensureLoadedInner(modelId);
+  } finally {
+    armIdleUnload();
+  }
+}
+
+async function ensureLoadedInner(modelId: string): Promise<void> {
   if (loadedModelId === modelId) return;
   if (currentLoadPromise && loadingModelId === modelId) {
     await currentLoadPromise;
@@ -306,6 +316,64 @@ export async function dispose(): Promise<void> {
   });
 }
 
+// ---- unloading when idle ----------------------------------------------------
+
+/**
+ * While ZEOS Qwen 4B is the chat model, this worker only serves side tasks
+ * (code summaries, the Explainer) with `qwen3.5-4b`, a second ~2.8 GB model
+ * on the GPU. `setIdleUnload(ms)` terminates the worker (freeing that memory)
+ * once it has been idle for `ms`; `null` (any other model) keeps it loaded.
+ * See src/lib/localLlm/engineLifecycle.ts.
+ */
+let idleUnloadMs: number | null = null;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearIdleUnload(): void {
+  if (idleTimer !== null) clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+function isBusy(): boolean {
+  return pending.size > 0 || currentLoadPromise !== null || pendingGeneration !== null;
+}
+
+function armIdleUnload(): void {
+  clearIdleUnload();
+  if (idleUnloadMs === null || !worker) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (isBusy()) {
+      armIdleUnload();
+      return;
+    }
+    unloadNow();
+  }, idleUnloadMs);
+}
+
+/** Terminate the worker if it holds a model and nothing is in flight. */
+function unloadNow(): boolean {
+  if (!worker || isBusy()) return false;
+  if (import.meta.env.DEV) console.debug(`[llmService] unloading ${loadedModelId ?? 'the worker'}`);
+  recycleWorker('Local model unloaded.');
+  return true;
+}
+
+/** Unload after `ms` idle (re-armed after every load and generation); `null` never. */
+export function setIdleUnload(ms: number | null): void {
+  idleUnloadMs = ms;
+  if (ms === null) clearIdleUnload();
+  else if (idleTimer === null && !isBusy()) armIdleUnload();
+}
+
+/**
+ * Unload now, unless the worker is busy or holds `keep`. Returns whether it
+ * unloaded; a busy worker is left to the idle timer.
+ */
+export function unloadIfIdle(keep?: string | null): boolean {
+  if (keep && (loadedModelId === keep || loadingModelId === keep)) return false;
+  return unloadNow();
+}
+
 // ---- generation -------------------------------------------------------------
 
 export interface GenerateOptions {
@@ -329,6 +397,15 @@ let activeGeneration: { id: number; abort: () => void } | null = null;
  * acknowledge the cancel within `ABORT_WATCHDOG_MS`, the worker is recycled.
  */
 export async function generate(opts: GenerateOptions): Promise<string> {
+  clearIdleUnload();
+  try {
+    return await generateInner(opts);
+  } finally {
+    armIdleUnload();
+  }
+}
+
+async function generateInner(opts: GenerateOptions): Promise<string> {
   const { prompt, signal, onToken, onStats } = opts;
   if (signal?.aborted) return '';
 

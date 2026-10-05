@@ -666,3 +666,57 @@ describe('llmService fatal generate errors', () => {
     expect(deltas).toEqual(['ok']);
   });
 });
+
+describe('llmService idle unload (side-task model while ZEOS Qwen 4B chats)', () => {
+  it('unloadIfIdle terminates an idle worker, but keeps the model it is told to keep', async () => {
+    const { svc, worker } = await freshService();
+    const w = await loadModel(svc, worker, 'qwen3.5-4b');
+    expect(svc.unloadIfIdle('qwen3.5-4b')).toBe(false);
+    expect(w.terminated).toBe(false);
+    expect(svc.unloadIfIdle('zeos-qwen3.5-4b')).toBe(true);
+    expect(w.terminated).toBe(true);
+    expect(svc.getLoadedModelId()).toBeNull();
+  });
+
+  it('unloadIfIdle leaves a busy worker alone', async () => {
+    const { svc, worker } = await freshService();
+    void svc.ensureLoaded('gemma-4-e2b').catch(() => undefined);
+    await tick();
+    expect(svc.unloadIfIdle(null)).toBe(false);
+    expect(worker().terminated).toBe(false);
+  });
+
+  it('setIdleUnload(ms) unloads after the worker has been idle that long, re-armed by each use', async () => {
+    vi.useFakeTimers();
+    const { svc, worker } = await freshService();
+    svc.setIdleUnload(60_000);
+    const w = await loadModel(svc, worker, 'qwen3.5-4b');
+
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(w.terminated).toBe(false);
+    // A generation re-arms the timer from its end.
+    const gen = svc.generate({ prompt: 'p', onToken: () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(w.terminated).toBe(false);
+    const g = w.last('generate');
+    w.emit({ type: 'done', id: g.id, text: '', stats: STATS });
+    await gen;
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(w.terminated).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(w.terminated).toBe(true);
+    expect(svc.getLoadedModelId()).toBeNull();
+  });
+
+  it('setIdleUnload(null) keeps the model loaded', async () => {
+    vi.useFakeTimers();
+    const { svc, worker } = await freshService();
+    svc.setIdleUnload(1_000);
+    svc.setIdleUnload(null);
+    const w = await loadModel(svc, worker);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(w.terminated).toBe(false);
+    expect(svc.getLoadedModelId()).toBe('gemma-4-e2b');
+  });
+});

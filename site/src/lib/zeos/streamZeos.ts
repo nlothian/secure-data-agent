@@ -33,6 +33,7 @@ import { getFeatures } from '../agentFeaturesStore';
 import { runAgentTool, type AgentToolSpec } from '../agentTools';
 import { setLlmPreparingToolCall, setStreamingSource } from '../executionPanelStore';
 import { getLocalGemmaModel, resolveActiveLocalModelIdOrDefault } from '../localLlm/models';
+import { noteZeosModuleLoaded } from '../localLlm/engineLifecycle';
 import { getPromptFormat, type ParsedToolCall, type PromptFormat } from '../localLlm/promptFormat';
 import { renderQwenSystemContent } from '../localLlm/qwenPrompt';
 import {
@@ -132,6 +133,9 @@ export const TRUSTED_RESULTS_PIPE = 'tools.results.trusted';
 const isResultPipe = (pipe: string | null): boolean => pipe === RESULTS_PIPE || pipe === TRUSTED_RESULTS_PIPE;
 
 // ---- engine and session ------------------------------------------------------
+
+// A switch to another model disposes this engine (engineLifecycle.ts).
+noteZeosModuleLoaded();
 
 let enginePromise: Promise<ZeosChatEngine> | null = null;
 let engineOverride: (() => Promise<ZeosChatEngine>) | null = null;
@@ -293,7 +297,7 @@ export async function warmZeos(): Promise<void> {
  * frees the model's GPU memory (~2.8 GB), and abort a start in progress. A
  * pending approval is cancelled and a turn in flight ends with an error. The
  * next message (or `warmZeos`) starts it again. Called when the chat switches
- * to another model.
+ * to another model (src/lib/localLlm/engineLifecycle.ts).
  */
 export function disposeZeos(why = 'model switched'): void {
   const reason = new Error(`ZEOS Qwen 4B was unloaded (${why})`);

@@ -7,6 +7,7 @@ import {
   type LocalGemmaModel,
 } from '../lib/localLlm/models';
 import { isModelCached } from '../lib/localLlm/modelCache';
+import { modelSwitchBlockedReason, releaseUnusedEngines } from '../lib/localLlm/engineLifecycle';
 
 export type SwitcherState =
   | { phase: 'idle' }
@@ -38,10 +39,17 @@ export default function useLocalGemmaSwitcher(
     (modelId: LocalGemmaId): void => {
       setActiveEndpoint(LOCAL_GEMMA_ENDPOINT);
       setModel(LOCAL_GEMMA_ENDPOINT, modelId);
+      const model = getLocalGemmaModel(modelId) ?? null;
+      // Free the engine the new model does not use before loading it, so the
+      // two never sit on the GPU together.
+      const released = releaseUnusedEngines(model).catch((err) =>
+        console.error('Failed to unload the previous model:', err),
+      );
       if (opts.loadOnApply) {
         void (async () => {
           try {
-            if (getLocalGemmaModel(modelId)?.family === 'zeos-qwen') {
+            await released;
+            if (model?.family === 'zeos-qwen') {
               const { warmZeos } = await import('../lib/zeos/streamZeos');
               await warmZeos();
               return;
@@ -61,6 +69,12 @@ export default function useLocalGemmaSwitcher(
     (modelId: LocalGemmaId): void => {
       const model = getLocalGemmaModel(modelId);
       if (!model) return;
+      const blocked = modelSwitchBlockedReason();
+      if (blocked) {
+        console.warn(`Model switch to ${model.label} refused: ${blocked}`);
+        setState({ phase: 'idle' });
+        return;
+      }
       const isAlreadyActive =
         config.activeEndpoint === LOCAL_GEMMA_ENDPOINT &&
         config.models[LOCAL_GEMMA_ENDPOINT] === modelId;
@@ -90,6 +104,7 @@ export default function useLocalGemmaSwitcher(
 
   const apply = useCallback((): void => {
     if (state.phase !== 'confirm') return;
+    if (modelSwitchBlockedReason()) return;
     const modelId = state.model.id;
     setState({ phase: 'idle' });
     commit(modelId);
