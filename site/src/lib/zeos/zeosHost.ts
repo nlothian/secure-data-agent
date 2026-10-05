@@ -117,6 +117,18 @@ export interface StartKernelOptions {
 
 type Pending = { op: string; resolve: (v: unknown) => void; reject: (e: Error) => void };
 
+/**
+ * Errors after which the kernel cannot be trusted with another request, so
+ * `ZeosKernel` disposes itself: a model call that timed out (the channel may
+ * then hand the next call this call's late reply), and Pyodide's own fatal
+ * error (every later call fails the same way).
+ */
+const FATAL_KERNEL_ERROR = /model worker did not answer .* within \d+ ms|Pyodide (?:has suffered a fatal error|already fatally failed)/;
+
+export function isFatalKernelError(err: KernelError): boolean {
+  return FATAL_KERNEL_ERROR.test(`${err.message}\n${err.traceback ?? ''}`);
+}
+
 export class ZeosKernel {
   readonly worker: Worker;
   boot!: BootInfo;
@@ -124,6 +136,7 @@ export class ZeosKernel {
   private pending = new Map<number, Pending>();
   private models = new Map<string, AttachedModel>();
   private disposed: Error | null = null;
+  private disposeListeners = new Set<(reason: Error) => void>();
   private readonly opts: StartKernelOptions;
 
   constructor(worker: Worker, opts: StartKernelOptions) {
@@ -144,7 +157,11 @@ export class ZeosKernel {
         if (!p) return;
         this.pending.delete(msg.id);
         if (msg.ok) p.resolve(msg.value);
-        else p.reject(new ZeosKernelError(p.op, msg.error));
+        else {
+          const err = new ZeosKernelError(p.op, msg.error);
+          p.reject(err);
+          if (isFatalKernelError(msg.error)) this.fail(err);
+        }
         return;
       }
       case 'event':
@@ -163,6 +180,43 @@ export class ZeosKernel {
     for (const p of this.pending.values()) p.reject(err);
     this.pending.clear();
     this.dispose(err);
+  }
+
+  /** Why the kernel was disposed, or null while it is alive. */
+  get disposedReason(): Error | null {
+    return this.disposed;
+  }
+
+  /**
+   * Call `listener` once when the kernel is disposed, for whatever reason: a
+   * worker or model-thread crash, a fatal call, or `dispose()`. Returns an
+   * unsubscribe function.
+   */
+  onDispose(listener: (reason: Error) => void): () => void {
+    if (this.disposed) {
+      listener(this.disposed);
+      return () => undefined;
+    }
+    this.disposeListeners.add(listener);
+    return () => {
+      this.disposeListeners.delete(listener);
+    };
+  }
+
+  /** Whether a request is still waiting for its reply. */
+  get busy(): boolean {
+    return this.pending.size > 0;
+  }
+
+  /**
+   * Reject every request still waiting for its reply with `reason`, now,
+   * without stopping the worker: the call runs on, and its reply is dropped.
+   * For Stop, which must not wait for a prefill to finish.
+   */
+  interrupt(reason: Error): void {
+    const waiting = [...this.pending.values()];
+    this.pending.clear();
+    for (const p of waiting) p.reject(reason);
   }
 
   /** Send one raw request. Prefer the typed helpers below. */
@@ -229,7 +283,37 @@ export class ZeosKernel {
     }
     const model = { name, backend, thread };
     this.models.set(name, model);
+    this.watchModelThread(name, thread);
     return model;
+  }
+
+  /**
+   * After it is attached, a model thread that crashes would leave the kernel
+   * blocked in `Atomics.wait` until the channel timeout, so a crash (an
+   * uncaught error, an undeserialisable message, or a late `{ready: false}`)
+   * disposes the kernel at once: the pending call rejects with the reason.
+   */
+  private watchModelThread(name: string, thread: Worker): void {
+    const forward = thread.onmessage;
+    thread.onmessage = (event: MessageEvent<ModelThreadMessage>) => {
+      const data = event.data;
+      if (data && 'ready' in data && data.ready === false) {
+        this.fail(new Error(`ZEOS model thread ${name} failed: ${data.error}`));
+        return;
+      }
+      forward?.call(thread, event);
+    };
+    thread.onerror = (event: ErrorEvent) => {
+      event.preventDefault();
+      this.fail(
+        new Error(
+          `ZEOS model thread ${name} crashed: ${event.message || 'unknown error'} ` +
+            `(${event.filename ?? '?'}:${event.lineno ?? '?'})`,
+        ),
+      );
+    };
+    thread.onmessageerror = () =>
+      this.fail(new Error(`ZEOS model thread ${name}: message could not be deserialised`));
   }
 
   /** Terminate the kernel worker and every model thread. Idempotent. */
@@ -241,6 +325,15 @@ export class ZeosKernel {
     this.worker.terminate();
     for (const m of this.models.values()) m.thread.terminate();
     this.models.clear();
+    const listeners = [...this.disposeListeners];
+    this.disposeListeners.clear();
+    for (const l of listeners) {
+      try {
+        l(reason);
+      } catch (err) {
+        console.error('ZEOS kernel dispose listener failed:', err);
+      }
+    }
   }
 }
 
@@ -329,26 +422,50 @@ export async function startModelThread(opts: AttachModelOptions): Promise<Starte
 /**
  * Kernel + one model, started in parallel (Pyodide boot and model load are
  * both slow). The model is attached as `opts.model.name ?? 'default'`.
+ *
+ * Fails fast: the first of the two to fail rejects at once, and the other is
+ * aborted (its worker terminated) rather than waited for, so a missing
+ * manifest is reported before the model's 2.4 GB load would have finished.
  */
 export async function startZeos(
   opts: StartKernelOptions & { model: AttachModelOptions },
 ): Promise<{ kernel: ZeosKernel; model: AttachedModel }> {
-  const [kernelResult, threadResult] = await Promise.allSettled([
-    startZeosKernel(opts),
-    startModelThread({ ...opts.model, signal: opts.model.signal ?? opts.signal }),
-  ]);
-  if (kernelResult.status === 'rejected' || threadResult.status === 'rejected') {
-    if (kernelResult.status === 'fulfilled') kernelResult.value.dispose();
-    if (threadResult.status === 'fulfilled') threadResult.value.thread.terminate();
-    throw kernelResult.status === 'rejected' ? kernelResult.reason : (threadResult as PromiseRejectedResult).reason;
+  const both = new AbortController();
+  const outer = [opts.signal, opts.model.signal].filter((s): s is AbortSignal => !!s);
+  const onOuterAbort = (event: Event) => both.abort((event.target as AbortSignal).reason);
+  for (const s of outer) {
+    if (s.aborted) both.abort(s.reason);
+    else s.addEventListener('abort', onOuterAbort, { once: true });
   }
-  const kernel = kernelResult.value;
+  const kernelStart = startZeosKernel({ ...opts, signal: both.signal });
+  const threadStart = startModelThread({ ...opts.model, signal: both.signal });
+  // Whichever settles after a failure must not leak its worker.
+  kernelStart.then(
+    (k) => both.signal.aborted && k.dispose(abortError(both.signal)),
+    () => undefined,
+  );
+  threadStart.then(
+    (t) => both.signal.aborted && t.thread.terminate(),
+    () => undefined,
+  );
   try {
-    const model = await kernel.attachThread(opts.model.name ?? 'default', threadResult.value, opts.model.timeoutMs);
-    return { kernel, model };
-  } catch (err) {
-    kernel.dispose(err as Error);
-    throw err;
+    let kernel: ZeosKernel;
+    let started: StartedModelThread;
+    try {
+      [kernel, started] = await Promise.all([kernelStart, threadStart]);
+    } catch (err) {
+      both.abort(err);
+      throw err;
+    }
+    try {
+      const model = await kernel.attachThread(opts.model.name ?? 'default', started, opts.model.timeoutMs);
+      return { kernel, model };
+    } catch (err) {
+      kernel.dispose(err as Error);
+      throw err;
+    }
+  } finally {
+    for (const s of outer) s.removeEventListener('abort', onOuterAbort);
   }
 }
 

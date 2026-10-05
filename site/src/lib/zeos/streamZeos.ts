@@ -135,6 +135,25 @@ const isResultPipe = (pipe: string | null): boolean => pipe === RESULTS_PIPE || 
 
 let enginePromise: Promise<ZeosChatEngine> | null = null;
 let engineOverride: (() => Promise<ZeosChatEngine>) | null = null;
+/** The start in progress: aborting it terminates both workers (`disposeZeos`). */
+let engineStart: AbortController | null = null;
+/** The engine `enginePromise` resolved to, while it lives. */
+let liveEngine: ZeosChatEngine | null = null;
+/**
+ * After a Stop: settles once the kernel has finished the call Stop
+ * interrupted, or the watchdog has reset it. The next message waits for it.
+ */
+let settling: Promise<void> | null = null;
+
+/**
+ * How long the kernel may take to finish the call a Stop interrupted before
+ * the engine is reset. A decode `step` batch takes well under a second; only
+ * a prefill runs longer (the first turn's is ~33 s on an M1 Max, in one model
+ * call). Stop drops the run, so the next message replays the history into a
+ * fresh one and that prefill is thrown away anyway: restarting the engine
+ * (~5 s with the files in the OS cache) is cheaper than waiting it out.
+ */
+export const ZEOS_ABORT_WATCHDOG_MS = 10_000;
 
 interface Session {
   run: ZeosChatRun;
@@ -158,10 +177,13 @@ function defaultModel() {
 function engine(): Promise<ZeosChatEngine> {
   if (!enginePromise) {
     store.setStatus('starting', 'Starting the ZEOS kernel');
+    const ctrl = new AbortController();
+    engineStart = ctrl;
     const start =
       engineOverride ??
       (() =>
         startKernelChatEngine(defaultModel(), {
+          signal: ctrl.signal,
           onStatus: (text) => store.setStatus('starting', text),
           onProgress: (p) => {
             if (p.phase === 'session') return store.setStatus('starting', 'Loading model onto GPU');
@@ -171,24 +193,137 @@ function engine(): Promise<ZeosChatEngine> {
             if (p.phase === 'download') store.setStatus('starting', `Loading model${pct}`);
           },
         }));
-    enginePromise = start().then(
+    const started: Promise<ZeosChatEngine> = start().then(
       (e) => {
+        if (ctrl.signal.aborted) {
+          // `disposeZeos` ran while it started.
+          const reason = ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error('ZEOS unloaded');
+          e.dispose?.(reason);
+          throw reason;
+        }
+        if (engineStart === ctrl) engineStart = null;
+        liveEngine = e;
+        e.onDispose?.((reason) => engineDied(e, reason));
         store.setStatus('ready', '', { backend: e.backend });
         return e;
       },
       (err: unknown) => {
-        enginePromise = null;
-        store.setStatus('error', err instanceof Error ? err.message : String(err));
+        if (enginePromise === started) enginePromise = null;
+        if (engineStart === ctrl) engineStart = null;
+        if (!ctrl.signal.aborted) store.setStatus('error', err instanceof Error ? err.message : String(err));
         throw err;
       },
     );
+    enginePromise = started;
   }
   return enginePromise;
 }
 
+/** The engine, once any Stop before this has settled (see `settling`). */
+async function readyEngine(): Promise<ZeosChatEngine> {
+  while (settling) await settling;
+  return engine();
+}
+
+/** Forget engine `e` and its run, so the next message starts a fresh one. */
+function forgetEngine(e: ZeosChatEngine): boolean {
+  if (liveEngine !== e) return false;
+  liveEngine = null;
+  enginePromise = null;
+  session = null;
+  // A pending approval card would otherwise wait on a dead run forever.
+  store.resetConversation();
+  return true;
+}
+
+/**
+ * The engine died on its own (a worker or model-thread crash, a model call
+ * that timed out, Pyodide's fatal error). The call in flight, if any, has
+ * already rejected with `reason`, so a streaming turn ends with that error;
+ * here the status says so and the next message starts a fresh engine.
+ */
+function engineDied(e: ZeosChatEngine, reason: Error): void {
+  if (!forgetEngine(e)) return;
+  console.error('[zeos] the engine stopped:', reason);
+  store.setStatus('error', `ZEOS stopped: ${reason.message}. Your next message restarts it.`, {
+    backend: null,
+  });
+}
+
+/**
+ * Stop: reject the kernel call the turn is waiting on at once (a prefill can
+ * hold one call for tens of seconds), then wait for the kernel to finish it in
+ * the background. If it has not within `ZEOS_ABORT_WATCHDOG_MS`, reset the
+ * engine.
+ */
+function interruptForStop(): void {
+  const e = liveEngine;
+  if (!e?.interrupt) return;
+  e.interrupt(new DOMException('Aborted', 'AbortError'));
+  if (!e.ping) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ZEOS_ABORT_WATCHDOG_MS);
+  });
+  const done: Promise<void> = Promise.race([
+    e.ping().then(
+      () => 'settled' as const,
+      () => 'settled' as const,
+    ),
+    watchdog,
+  ]).then((outcome) => {
+    clearTimeout(timer);
+    if (settling === done) settling = null;
+    if (outcome === 'timeout' && forgetEngine(e)) {
+      console.warn(`[zeos] the kernel did not settle within ${ZEOS_ABORT_WATCHDOG_MS} ms of Stop; restarting it`);
+      e.dispose?.(new Error('ZEOS was restarted after Stop'));
+      store.setStatus('idle', '', { backend: null });
+    }
+  });
+  settling = done;
+}
+
 /** Start the kernel and model thread ahead of the first message (model picker, boot). */
 export async function warmZeos(): Promise<void> {
-  await engine();
+  await readyEngine();
+}
+
+/**
+ * Unload ZEOS Qwen 4B: terminate the kernel worker and the model thread, which
+ * frees the model's GPU memory (~2.8 GB), and abort a start in progress. A
+ * pending approval is cancelled and a turn in flight ends with an error. The
+ * next message (or `warmZeos`) starts it again. Called when the chat switches
+ * to another model.
+ */
+export function disposeZeos(why = 'model switched'): void {
+  const reason = new Error(`ZEOS Qwen 4B was unloaded (${why})`);
+  engineStart?.abort(reason);
+  engineStart = null;
+  const e = liveEngine;
+  const wasLoaded = e !== null || enginePromise !== null;
+  if (e) forgetEngine(e);
+  enginePromise = null;
+  session = null;
+  settling = null;
+  store.resetConversation();
+  e?.dispose?.(reason);
+  if (wasLoaded) store.setStatus('idle', '', { backend: null });
+}
+
+/** Whether a ZEOS engine is running or starting (tests, the lifecycle). */
+export function isZeosLoaded(): boolean {
+  return liveEngine !== null || enginePromise !== null;
+}
+
+/** `p`, or an AbortError as soon as `signal` aborts (`p` runs on). */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new DOMException('Aborted', 'AbortError'));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 async function dropSession(): Promise<void> {
@@ -204,6 +339,9 @@ export async function __setZeosEngineForTests(
   await dropSession();
   engineOverride = factory;
   enginePromise = null;
+  engineStart = null;
+  liveEngine = null;
+  settling = null;
 }
 
 /**
@@ -396,8 +534,9 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   let firstTokenAt: number | null = null;
   let lastTokenAt = 0;
 
+  signal?.addEventListener('abort', interruptForStop, { once: true });
   try {
-    const eng = await engine();
+    const eng = await untilAborted(readyEngine(), signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     if (!session || session.key !== key) {
@@ -627,13 +766,16 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   } catch (err) {
     setLlmPreparingToolCall(null);
     // Mid-turn, the run is waiting somewhere only this loop knew about; the
-    // next message replays the stored history into a fresh one instead.
-    await dropSession();
+    // next message replays the stored history into a fresh one instead. Not
+    // awaited: after a Stop the close queues behind the interrupted call.
+    void dropSession();
     if (isAbortError(err)) {
       onDone(accumulated);
       return;
     }
     onError(err instanceof Error ? err : new Error(String(err)));
+  } finally {
+    signal?.removeEventListener('abort', interruptForStop);
   }
 }
 
