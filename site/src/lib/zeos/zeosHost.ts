@@ -59,7 +59,7 @@ export class NotCrossOriginIsolatedError extends Error {
         'ZEOS kernel cannot call its model. Serve it with ' +
         '`Cross-Origin-Opener-Policy: same-origin` and ' +
         '`Cross-Origin-Embedder-Policy: credentialless` (astro.config.mjs server.headers, ' +
-        'public/_headers).',
+        'which `astro dev` and `astro preview` send; production does not yet).',
     );
     this.name = 'NotCrossOriginIsolatedError';
   }

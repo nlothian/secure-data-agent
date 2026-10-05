@@ -6,7 +6,7 @@
  * `ZeosChatRun` interfaces, so its tests swap in a scripted engine.
  */
 import type { LocalGemmaModel } from '../localLlm/models';
-import { modelRef, startZeos, type ZeosHandle, type ZeosKernel } from './zeosHost';
+import { assertCrossOriginIsolated, modelRef, startZeos, type ZeosHandle, type ZeosKernel } from './zeosHost';
 import { createZeosLoadProgress, zeosModelThreadFor } from './zeosModelWorker';
 import type { ToolClassEntry, TrustedResultRule } from './zeosToolClasses';
 import type { ZeosImportTurn } from './zeosHistory';
@@ -97,7 +97,12 @@ export interface ZeosChatOpenOptions {
 }
 
 export interface ZeosChatRun {
-  importHistory(turns: readonly ZeosImportTurn[]): Promise<ZeosEvent[]>;
+  /**
+   * Replay stored turns into a fresh run (ZEOS `import_history`).
+   * `startIntegrity` is the job's integrity before the replay: 3 when the
+   * stored conversation had been demoted, so the replay cannot forget it.
+   */
+  importHistory(turns: readonly ZeosImportTurn[], startIntegrity?: number): Promise<ZeosEvent[]>;
   sendUser(text: string): Promise<void>;
   step(ticks: number): Promise<ZeosEvent[]>;
   waitingOn(): Promise<string | null>;
@@ -127,16 +132,23 @@ class KernelChatRun implements ZeosChatRun {
     return this.kernel.callMethod<T>(this.run, method, args);
   }
 
-  importHistory(turns: readonly ZeosImportTurn[]) {
-    return this.m<ZeosEvent[]>(
+  importHistory(turns: readonly ZeosImportTurn[], startIntegrity = 2) {
+    // `trusted` is always a real bool (ZEOS refuses anything else), and the
+    // kernel checks a trusted result against the trusted-results table.
+    const entries = turns.map((t) =>
+      t.role === 'assistant'
+        ? { role: t.role, text: t.text, integrity: t.integrity ?? 3 }
+        : t.role === 'tool'
+          ? { role: t.role, text: t.text, trusted: t.trusted === true }
+          : { role: t.role, text: t.text },
+    );
+    // Only a demoted start is passed, so a wheel without `start_integrity`
+    // still replays an undemoted conversation.
+    return this.kernel.callMethod<ZeosEvent[]>(
+      this.run,
       'import_history',
-      turns.map((t) =>
-        t.role === 'assistant'
-          ? { role: t.role, text: t.text, integrity: t.integrity ?? 3 }
-          : t.role === 'tool' && t.trusted
-            ? { role: t.role, text: t.text, trusted: true }
-            : { role: t.role, text: t.text },
-      ),
+      [entries],
+      startIntegrity > 2 ? { start_integrity: startIntegrity } : undefined,
     );
   }
   sendUser(text: string) {
@@ -182,6 +194,9 @@ export async function startKernelChatEngine(
   model: LocalGemmaModel,
   hooks: StartEngineHooks = {},
 ): Promise<ZeosChatEngine> {
+  // Production does not send COOP/COEP yet (CLAUDE.md, "Cross-origin
+  // isolation"): say so before anything downloads, rather than hang.
+  assertCrossOriginIsolated();
   const thread = zeosModelThreadFor(model);
   if (!thread.stub) {
     // No WebAssembly fallback for this export: fail before booting Pyodide.

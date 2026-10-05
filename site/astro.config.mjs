@@ -21,8 +21,9 @@ export default defineConfig({
   // `credentialless` rather than `require-corp`: cross-origin no-cors loads
   // (Google Fonts, the Hugging Face Hub's CDN redirects, jsDelivr) still
   // work without each host sending Cross-Origin-Resource-Policy; they are
-  // just fetched without cookies. Production sets the same pair in
-  // public/_headers.
+  // just fetched without cookies. Only dev and preview send them: ZEOS is
+  // listed only in local-models / stub dev mode, so production
+  // (public/_headers) is not isolated until ZEOS ships there.
   server: {
     headers: {
       'Access-Control-Allow-Origin': '*',

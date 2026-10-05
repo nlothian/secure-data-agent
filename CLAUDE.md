@@ -120,18 +120,26 @@ c.startTour({ id: 'jump', stages: [stage] });
 
 ## Cross-origin isolation (COOP/COEP)
 
-Every page is served with `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: credentialless`: `server.headers` in
-`site/astro.config.mjs` for `astro dev` / `astro preview`, and `/*` in
-`site/public/_headers` for production. That makes `crossOriginIsolated`
-true, which the ZEOS kernel needs for `SharedArrayBuffer` + `Atomics.wait`.
+`astro dev` and `astro preview` serve every page with
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless` (`server.headers` in
+`site/astro.config.mjs`). Production (`site/public/_headers`) does not send
+them until ZEOS ships there: the ZEOS Qwen 4B model, the only thing that
+needs isolation, is listed only in local-models or stub dev mode. Isolation
+makes `crossOriginIsolated` true, which the ZEOS kernel needs for
+`SharedArrayBuffer` + `Atomics.wait`; without it `startKernelChatEngine`
+fails at once with `NotCrossOriginIsolatedError` (the chat shows the
+reason and the trust indicator reads "ZEOS error"), before any download.
+Nothing else depends on it.
 `credentialless` (not `require-corp`) keeps Google Fonts, the Hugging Face
 Hub's CDN redirects, jsDelivr (Pyodide, DuckDB-wasm) and remote CSV URLs
 working without CORP headers; cross-origin no-cors loads just go without
-cookies. Any new cross-origin iframe or popup must cope with this.
+cookies. Any new cross-origin iframe or popup must cope with this in dev,
+and in production once the headers move to `_headers`.
 Isolation also turns on ONNX Runtime's multi-threaded wasm by default,
 which made Gemma generation ~2.5x slower, so `src/workers/llm.worker.ts` pins
-`env.backends.onnx.wasm.numThreads = 1` (the pre-isolation behaviour).
+`env.backends.onnx.wasm.numThreads = 1` (the pre-isolation behaviour, and
+the same in production).
 
 ## ZEOS kernel (browser)
 
