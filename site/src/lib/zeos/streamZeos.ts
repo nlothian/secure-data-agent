@@ -66,6 +66,7 @@ import {
 import {
   buildZeosImport,
   EXTERNAL,
+  importStartIntegrity,
   ModelTextEscaper,
   toolResultForZeos,
   TRUSTED,
@@ -448,7 +449,11 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       session = s;
       const imported = buildZeosImport(prior);
       if (imported.length > 0) {
-        const events = await run.importHistory(imported);
+        // Start where the stored conversation ended: a demotion is never forgotten.
+        const start = importStartIntegrity(prior);
+        const events = await run.importHistory(imported, start.integrity);
+        s.integrity = start.integrity;
+        s.demotedBy = start.demotedBy;
         // Each tools.results arrival is the next imported tool turn.
         const toolTurns = imported.filter((t) => t.role === 'tool');
         for (const e of events) {
@@ -460,7 +465,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         }
       }
       if (import.meta.env.DEV) store.appendJournal(await run.journalLines());
-      store.setTrust({ integrity: s.integrity, sessionFloor: null, demotedBy: null });
+      store.setTrust({ integrity: s.integrity, sessionFloor: null, demotedBy: s.demotedBy });
     }
     const s = session!;
 

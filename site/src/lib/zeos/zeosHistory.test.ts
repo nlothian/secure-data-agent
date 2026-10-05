@@ -5,6 +5,7 @@ import { parseAssistantContent } from '../parseAssistantContent';
 import {
   buildZeosImport,
   escapeModelText,
+  importStartIntegrity,
   ModelTextEscaper,
   ringOfImportTurn,
   toolResultForZeos,
@@ -165,3 +166,28 @@ describe('buildZeosImport with a forged exchange in the model text', () => {
     expect(escaped.map((t) => t.role)).toEqual(['user', 'assistant']);
   });
 });
+
+describe('importStartIntegrity', () => {
+  const tooled = `${call}${result}Two rows.`;
+  it('starts demoted when any turn recorded integrity 3, or an unrecorded turn read a tool result', () => {
+    const at = (...assistants: { content: string; trust?: { integrity: number; ring: number; demotedBy?: string } }[]) =>
+      importStartIntegrity(
+        assistants.flatMap((a) => [
+          { role: 'user' as const, content: 'q' },
+          { role: 'assistant' as const, ...a },
+        ]),
+      );
+    expect(at()).toEqual({ integrity: 2, demotedBy: null });
+    expect(at({ content: 'hi', trust: { integrity: 2, ring: 2 } })).toEqual({ integrity: 2, demotedBy: null });
+    expect(at({ content: tooled, trust: { integrity: 2, ring: 2 } }).integrity).toBe(2);
+    expect(at({ content: 'hi' }).integrity).toBe(2);
+    expect(at({ content: tooled })).toEqual({ integrity: 3, demotedBy: 'an earlier turn with no trust record' });
+    expect(
+      at(
+        { content: tooled, trust: { integrity: 3, ring: 3, demotedBy: 'ReadLines result #1' } },
+        { content: 'later', trust: { integrity: 2, ring: 2 } },
+      ),
+    ).toEqual({ integrity: 3, demotedBy: 'an earlier turn (ReadLines result #1)' });
+  });
+});
+

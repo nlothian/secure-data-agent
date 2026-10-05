@@ -43,9 +43,11 @@ const segment = (n: number, pipe = 'tools.results') => ({
 class FakeRun implements ZeosChatRun {
   log: [string, ...unknown[]][] = [];
   waiting: string | null = 'chat.user';
+  startIntegrity: number | undefined;
   constructor(private readonly batches: ZeosEvent[][]) {}
-  async importHistory(turns: readonly ZeosImportTurn[]) {
+  async importHistory(turns: readonly ZeosImportTurn[], startIntegrity?: number) {
     this.log.push(['importHistory', turns]);
+    this.startIntegrity = startIntegrity;
     return turns
       .filter((t) => t.role === 'tool')
       .map((_, i): ZeosEvent => ({ type: 'arrived', pipe: 'tools.results', segment: 100 + i, ring: 3, integrity: 3 }));
@@ -314,6 +316,32 @@ describe('streamZeos', () => {
       { role: 'user', content: 'ok?' },
     ]).done;
     expect(c.trust.at(-1)?.demotedBy).toBe('ReadLines result #1');
+  });
+
+  it('replays a demoted conversation demoted: the run starts at integrity 3 (T4)', async () => {
+    const reply = (t: string): ZeosEvent[][] => [[...tokens(t), { type: 'reply', text: t, reasoning: null, raw: '' }, { type: 'waiting', pipe: 'chat.user' }]];
+    await useEngine([reply('Fine.'), reply('Fine.'), reply('Fine.')]);
+    const call = '<|tool_call>call:ReadLines{path:<|"|>/input/a.csv<|"|>}<tool_call|>';
+    const result = '<|tool_response>response:ReadLines{lines:[<|"|>x<|"|>]}<tool_response|>';
+    const history = (trust?: ChatTrust): StreamChatMessage[] => [
+      { role: 'user', content: 'read a' },
+      { role: 'assistant', content: `${call}${result}Done.`, ...(trust ? { trust } : {}) },
+      { role: 'user', content: 'now save it' },
+    ];
+    const c = await send(history({ integrity: 3, ring: 3, toolRings: [3], demotedBy: 'ReadLines result #1' })).done;
+    expect(engine.runs[0].startIntegrity).toBe(3);
+    expect(c.trust.at(-1)).toMatchObject({ integrity: 3, demotedBy: 'an earlier turn (ReadLines result #1)' });
+    expect(store.getSnapshot().integrity).toBe(3);
+
+    // Read but never demoted: integrity 2.
+    await __setZeosEngineForTests(async () => engine);
+    await send(history({ integrity: 2, ring: 2, toolRings: [3] })).done;
+    expect(engine.runs[1].startIntegrity).toBe(2);
+
+    // No record (another model wrote it) and a tool result in it: assume the worst.
+    await __setZeosEngineForTests(async () => engine);
+    await send(history()).done;
+    expect(engine.runs[2].startIntegrity).toBe(3);
   });
 
   it('stops on abort, drops the run, and replays next time', async () => {

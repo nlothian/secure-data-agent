@@ -155,3 +155,35 @@ export function buildZeosImport(
   const first = out.findIndex((t) => t.role === 'user');
   return first === -1 ? [] : out.slice(first);
 }
+
+/**
+ * The integrity a replay starts the job at (`import_history(start_integrity=…)`).
+ * The integrity is a low-water mark that never rises within a conversation,
+ * so a run rebuilt from history (reload, retry, abort, a mode switch, the
+ * call cap) must start where the stored conversation ended, not at 2:
+ *
+ * - EXTERNAL (3) when any assistant turn recorded integrity 3 (it was
+ *   demoted while it ran);
+ * - EXTERNAL when a turn with no trust record (another model wrote it, or an
+ *   older build) holds a tool result: nothing vouches that it was not read;
+ * - TRUSTED (2) otherwise.
+ *
+ * Strict mode's session floor is not carried over: it lasts only until the
+ * next user message, and every replay is followed by one.
+ */
+export function importStartIntegrity(
+  messages: readonly Pick<StreamChatMessage, 'role' | 'content' | 'trust'>[],
+): { integrity: number; demotedBy: string | null } {
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue;
+    if (m.trust) {
+      if (m.trust.integrity >= EXTERNAL) {
+        return { integrity: EXTERNAL, demotedBy: `an earlier turn${m.trust.demotedBy ? ` (${m.trust.demotedBy})` : ''}` };
+      }
+    } else if (importHistoryForQwen([{ role: 'assistant', content: m.content }]).some((s) => s.role === 'tool')) {
+      return { integrity: EXTERNAL, demotedBy: 'an earlier turn with no trust record' };
+    }
+  }
+  return { integrity: TRUSTED, demotedBy: null };
+}
+
