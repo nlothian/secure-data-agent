@@ -63,7 +63,14 @@ import {
   type ZeosEvent,
   type ZeosSegment,
 } from './zeosChatEngine';
-import { buildZeosImport, EXTERNAL, toolResultForZeos, TRUSTED, userTextForZeos } from './zeosHistory';
+import {
+  buildZeosImport,
+  EXTERNAL,
+  ModelTextEscaper,
+  toolResultForZeos,
+  TRUSTED,
+  userTextForZeos,
+} from './zeosHistory';
 import * as store from './zeosSessionStore';
 import { dispatchForZeos, zeosSystemPrompt } from './zeosPrompt';
 import {
@@ -236,11 +243,15 @@ function segmentLabel(seg: Pick<ZeosSegment, 'pipe' | 'segment'>, s: Session): s
  * Turns the model's tokens into the UI's and history's canonical text, as
  * `streamLocalGemma` does for Qwen: `<think>` → the Gemma thought channel,
  * tool-call text held back until it parses, then replaced by `→ name(args)` /
- * `← result` markers in the UI and Gemma tool tokens in history.
+ * `← result` markers in the UI and Gemma tool tokens in history. The model's
+ * own text is escaped on the way (`ModelTextEscaper`), so it can never spell
+ * those markers or tokens; only the app writes them.
  */
 export class ZeosTurnText {
   private splitter!: SplitterState;
   private toolBuffer = '';
+  private readonly uiText = new ModelTextEscaper();
+  private readonly historyText = new ModelTextEscaper();
   /** The call the parser closed in the current assistant turn, if any. */
   parsedCall: ParsedToolCall | null = null;
 
@@ -253,13 +264,27 @@ export class ZeosTurnText {
     this.startAssistantTurn();
   }
 
+  /** Model text for the UI. */
+  private modelUi(text: string): void {
+    this.emit(this.uiText.push(text));
+  }
+
+  /** Text the app writes into the UI (markers): the model's held-back tail goes first. */
+  private appUi(text: string): void {
+    this.emit(this.uiText.flush() + text);
+  }
+
+  private appHistory(text: string): void {
+    this.emitHistory(this.historyText.flush() + text);
+  }
+
   /** Each Qwen assistant turn (the first, and one after every tool response). */
   startAssistantTurn(): void {
     const start = this.fmt.turnStart(this.thinking, 0);
     this.splitter = createSplitterState(start.mode, this.fmt.markers);
     this.toolBuffer = '';
     this.parsedCall = null;
-    if (start.mode === 'in-thought') this.emit(THINKING_OPEN_MARKER);
+    if (start.mode === 'in-thought') this.appUi(THINKING_OPEN_MARKER);
   }
 
   token(text: string): void {
@@ -269,15 +294,15 @@ export class ZeosTurnText {
   private visible(text: string): void {
     const shown = text.split(this.fmt.markers.close).join('');
     if (!shown) return;
-    this.emit(shown);
-    this.emitHistory(shown);
+    this.modelUi(shown);
+    this.emitHistory(this.historyText.push(shown));
   }
 
   private handle(e: SplitterEvent): void {
     if (this.parsedCall) return;
-    if (e.kind === 'open') return this.emit(THINKING_OPEN_MARKER);
-    if (e.kind === 'close') return this.emit(CHANNEL_CLOSE);
-    if (e.kind === 'thought') return this.emit(e.text);
+    if (e.kind === 'open') return this.appUi(THINKING_OPEN_MARKER);
+    if (e.kind === 'close') return this.appUi(CHANNEL_CLOSE);
+    if (e.kind === 'thought') return this.modelUi(e.text);
     this.toolBuffer += e.kind === 'stray-close' ? this.fmt.markers.close : e.text;
     const parsed = this.fmt.parseStreamForToolCall(this.toolBuffer);
     if (parsed.emitText) this.visible(parsed.emitText);
@@ -301,20 +326,22 @@ export class ZeosTurnText {
 
   /** A call and its result, in both canonical forms; then the next assistant turn. */
   toolExchange(name: string, argsJson: string, resultStr: string): void {
-    this.emitHistory(formatToolCallToken(name, argsJson));
-    this.emit(`\n\n→ ${name}(${argsJson || '{}'})\n`);
-    this.emit(`← ${resultStr}\n\n`);
-    this.emitHistory(formatToolResponseToken(name, resultStr));
+    this.appHistory(formatToolCallToken(name, argsJson));
+    this.appUi(`\n\n→ ${name}(${argsJson || '{}'})\n`);
+    this.appUi(`← ${resultStr}\n\n`);
+    this.appHistory(formatToolResponseToken(name, resultStr));
     this.startAssistantTurn();
   }
 
-  /** The turn ended in a reply: release anything held back as text. */
+  /** The turn ended in a reply (or was cut short): release anything held back as text. */
   finish(): void {
     for (const e of flushSplitter(this.splitter)) this.handle(e);
     if (!this.parsedCall && this.toolBuffer) {
       this.visible(this.toolBuffer);
       this.toolBuffer = '';
     }
+    this.appUi('');
+    this.appHistory('');
   }
 }
 

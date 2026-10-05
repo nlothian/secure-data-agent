@@ -5,7 +5,8 @@
  * - a user message → `chat.user`, TRUSTED (2);
  * - a tool result → `tools.results`, EXTERNAL (3), or `tools.results.trusted`
  *   (2) when `ZEOS_TRUSTED_RESULTS` names the call (a bundled skill card) and
- *   the turn did not record it at ring 3 (`ChatTrust.toolRings`);
+ *   the turn recorded it at ring 2 (`ChatTrust.toolRings`); a turn with no
+ *   record replays every result on ring 3;
  * - past assistant text → `chat.history.trusted` (2) when the turn recorded
  *   that it was written at integrity 2, else `chat.history` (3). A turn with
  *   no record (another model wrote it, or an older build) is untrusted.
@@ -14,6 +15,7 @@
  * converts it, splitting a turn at each tool call as the Qwen template does.
  */
 import { escapeForQwenPrompt, importHistoryForQwen } from '../localLlm/qwenPrompt';
+import { escapeForToolPrompt, STRUCTURAL_DELIMITERS } from '../localLlm/toolPrompt';
 import type { StreamChatMessage } from '../streamChat';
 import { isTrustedToolResult } from './zeosToolClasses';
 
@@ -53,6 +55,58 @@ export function userTextForZeos(text: string): string {
   return escapeForQwenPrompt(text);
 }
 
+/**
+ * The model's own text, as it is stored (history and UI): every Gemma
+ * structural delimiter defanged (`escapeForToolPrompt`), and each `→` / `←`
+ * followed by a zero-width space. Stored history is the Gemma wire format,
+ * which `parseGemmaHistory` reads back on a reload or retry, and the UI text
+ * marks tool calls with `\n\n→ name(args)` / `← result`
+ * (`parseAssistantContent`). Without this, a reply that an injection talked
+ * into spelling `<|tool_call>call:CallSkill{…}<tool_call|><|tool_response>…`
+ * would replay as a real tool exchange, and could be taken for a trusted
+ * skill card.
+ */
+export function escapeModelText(text: string): string {
+  return escapeForToolPrompt(text).replace(/[→←]/g, (c) => `${c}\u200b`);
+}
+
+/** The longest suffix of `text` that could still grow into a delimiter. */
+function partialDelimiterSuffix(text: string): number {
+  let longest = 0;
+  for (const delim of STRUCTURAL_DELIMITERS) {
+    for (let n = Math.min(delim.length - 1, text.length); n > longest; n--) {
+      if (text.endsWith(delim.slice(0, n))) {
+        longest = n;
+        break;
+      }
+    }
+  }
+  return longest;
+}
+
+/**
+ * `escapeModelText` for text that arrives in pieces: a delimiter split
+ * across two pieces is still caught, because a tail that could be the start
+ * of one is held back until the next piece (or `flush`).
+ */
+export class ModelTextEscaper {
+  private held = '';
+
+  push(piece: string): string {
+    const text = this.held + piece;
+    const keep = partialDelimiterSuffix(text);
+    this.held = text.slice(text.length - keep);
+    return escapeModelText(text.slice(0, text.length - keep));
+  }
+
+  /** Release what is held back, before text the app writes itself (or at the end). */
+  flush(): string {
+    const text = this.held;
+    this.held = '';
+    return escapeModelText(text);
+  }
+}
+
 function argsOf(json: string | undefined): Record<string, unknown> | undefined {
   if (!json) return {};
   try {
@@ -78,11 +132,14 @@ export function buildZeosImport(
     let toolIndex = 0;
     for (const seg of importHistoryForQwen([{ role: 'assistant', content: m.content }])) {
       if (seg.role === 'tool') {
+        // Ring 2 only when the turn recorded this very result on ring 2 live
+        // (the kernel put it there) and the call is still an exact bundled
+        // skill: never on the name alone, which the model's text could spell.
         const recorded = m.trust?.toolRings?.[toolIndex++];
         const trusted =
           seg.toolName !== undefined &&
           isTrustedToolResult(seg.toolName, argsOf(seg.toolArgsJson)) &&
-          recorded !== EXTERNAL;
+          recorded === TRUSTED;
         out.push({
           role: 'tool',
           text: toolResultForZeos(seg.content),
