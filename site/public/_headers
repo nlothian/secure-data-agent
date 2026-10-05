@@ -1,3 +1,10 @@
+# Cross-origin isolation for every page: SharedArrayBuffer + Atomics.wait,
+# which the ZEOS kernel worker needs (see astro.config.mjs `server.headers`,
+# which sets the same pair for `astro dev` / `astro preview`).
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
+
 /tour-data/*
   Access-Control-Allow-Origin: *
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS

@@ -13,9 +13,21 @@ export default defineConfig({
   // `vite.preview.cors`, but it does forward `server.headers` to Vite — so we
   // set the CORS header here and it covers both `astro dev` (via Vite's dev
   // middleware) and `astro preview`.
+  //
+  // COOP/COEP make every page cross-origin isolated, which is what exposes
+  // SharedArrayBuffer and Atomics.wait. The ZEOS kernel worker
+  // (src/workers/zeosKernel.worker.ts) calls its model thread synchronously
+  // over a SharedArrayBuffer (src/lib/zeos/zeosHost.ts), so it needs them.
+  // `credentialless` rather than `require-corp`: cross-origin no-cors loads
+  // (Google Fonts, the Hugging Face Hub's CDN redirects, jsDelivr) still
+  // work without each host sending Cross-Origin-Resource-Policy; they are
+  // just fetched without cookies. Production sets the same pair in
+  // public/_headers.
   server: {
     headers: {
       'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'credentialless',
     },
   },
   vite: {
