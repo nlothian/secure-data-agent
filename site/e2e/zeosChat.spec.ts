@@ -278,6 +278,31 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     ).toHaveText('ring 2');
   });
 
+  test('strict: a miscased skill name is not a bundled card, so it is ring 3 and the effect waits', async ({
+    page,
+  }) => {
+    await boot(page, {
+      attention: 'first',
+      replies: [
+        call('CallSkill', { skill: 'SQL' }),
+        call('WriteLines', { path: '/scratchpad/q.sql', content: 'SELECT 1' }),
+        'Saved the query.',
+      ],
+    });
+    await seedInput(page, 'empty.csv', 'a\n1\n');
+    await send(page, 'Write a query file.');
+    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    const skill = lastAssistant(page).locator('.chat-tool-call', { hasText: 'CallSkill' });
+    await expect(skill.locator('.chat-ring-badge')).toHaveText('ring 3');
+    await card(page).getByRole('button', { name: 'Approve' }).click();
+    await expect(lastAssistant(page)).toContainText('Saved the query.', { timeout: 60_000 });
+
+    await page.reload();
+    await expect(
+      lastAssistant(page).locator('.chat-tool-call', { hasText: 'CallSkill' }).locator('.chat-ring-badge'),
+    ).toHaveText('ring 3');
+  });
+
   test('attention-only: attending the skill card does not demote', async ({ page }) => {
     await boot(page, {
       attention: 'recent',

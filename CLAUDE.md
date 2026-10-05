@@ -164,8 +164,11 @@ The agent runs under the ZEOS kernel instead of the transformers.js worker
 (family `zeos-qwen`; `src/lib/streamChat.ts` routes it to
 `src/lib/zeos/streamZeos.ts`). User messages enter on ring 2 (TRUSTED),
 tool results on ring 3 (EXTERNAL), except a bundled skill card: `CallSkill`
-with a known skill name arrives on `tools.results.trusted` (ring 2), because
-the app wrote it. Calls go to `tools.read` or `tools.effect` according to
+with a bundled skill name arrives on `tools.results.trusted` (ring 2), because
+the app wrote it. The name must match exactly and case-sensitively
+(`open_chat(trusted_results={tool: {param: [value, ...]}})`, not a pattern):
+`CallSkill("SQL")` or `"sql "` is an unknown skill and its result is ring 3.
+`read_if` rules stay case-insensitive patterns. Calls go to `tools.read` or `tools.effect` according to
 `src/lib/zeos/zeosToolClasses.ts`, and the ring-2 results are listed there
 too (`ZEOS_TRUSTED_RESULTS`); it is the only place that policy lives. `RunSQL` is a read only when its SQL is inline
 (`sql`) and read-only, so this model gets an inline-`sql` RunSQL spec. When the
@@ -308,5 +311,6 @@ compaction are off for this model. Side tasks such as code summaries use
   abort opens a fresh run and replays history (`buildZeosImport`). Past
   assistant turns replay at their recorded `ChatMessage.trust.integrity`;
   turns with no record replay as untrusted (3). A CallSkill result replays on
-  ring 2 when `ZEOS_TRUSTED_RESULTS` names the call and the turn did not
-  record it on ring 3 (`ChatTrust.toolRings`).
+  ring 2 when `ZEOS_TRUSTED_RESULTS` names the call exactly (case-sensitive)
+  and the turn did not record it on ring 3 (`ChatTrust.toolRings`); any other
+  skill name replays on ring 3, whatever ring the turn recorded.

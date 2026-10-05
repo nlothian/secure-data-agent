@@ -402,7 +402,7 @@ describe('streamZeos', () => {
     ]);
     const c = await send([{ role: 'user', content: 'write a query' }]).done;
     expect(c.error).toBeNull();
-    expect(engine.opened[0].trustedResults?.CallSkill?.skill).toMatch(/sql/);
+    expect(engine.opened[0].trustedResults?.CallSkill?.skill).toContain('sql');
     const delivered = engine.runs[0].log.filter((l) => l[0] === 'deliverToolResult');
     expect(delivered.map((l) => l[2])).toEqual([true, false]);
     // dispatchForZeos answers CallSkill('sql') with the inline-sql card itself.
@@ -413,12 +413,13 @@ describe('streamZeos', () => {
     expect(store.getSnapshot().pending).toBeNull();
   });
 
-  it('delivers an unknown skill name on ring 3', async () => {
+  // `SQL` is not `sql`: the trusted-results rule is exact and case-sensitive.
+  it.each(['evil', 'SQL', 'sql '])('delivers the unknown skill name %j on ring 3', async (skill) => {
     await useEngine([
       [
         [
-          ...tokens(callText('CallSkill', { skill: 'evil' })),
-          { type: 'tool_call', call: 0, name: 'CallSkill', arguments: { skill: 'evil' }, sink: 'tools.read', results: 'tools.results' },
+          ...tokens(callText('CallSkill', { skill })),
+          { type: 'tool_call', call: 0, name: 'CallSkill', arguments: { skill }, sink: 'tools.read', results: 'tools.results' },
         ],
         [
           { type: 'arrived', pipe: 'tools.results', segment: 7, ring: 3, integrity: 3 },
