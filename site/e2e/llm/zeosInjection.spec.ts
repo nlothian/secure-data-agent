@@ -146,7 +146,7 @@ async function runInjection(page: Page, attentionOnly: boolean) {
   await seedInjectedCsv(page);
   const loaded = await dispatchLoadData(page, '/input/reviews.csv', 'reviews');
   expect(loaded.error).toBeUndefined();
-  expect(loaded.rowCount).toBe(6);
+  expect(loaded.rowCount).toBe(8);
 
   // Release the tool debugger's gate for every call (as the user pressing
   // Play), and deny every ZEOS approval card, recording what it asked for.
