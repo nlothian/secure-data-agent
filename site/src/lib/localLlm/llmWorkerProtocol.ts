@@ -9,8 +9,11 @@
  * promise.
  */
 
+/** Chat-template family of a local model (mirrors `LocalModelFamily` in `models.ts`). */
+export type LlmModelFamily = 'gemma' | 'qwen';
+
 export type LlmWorkerIn =
-  | { type: 'load'; id: number; hfId: string }
+  | { type: 'load'; id: number; hfId: string; family: LlmModelFamily }
   | { type: 'generate'; id: number; prompt: string }
   | { type: 'count'; id: number; text: string }
   /** `id` names the in-flight `generate` request to interrupt. */
@@ -40,7 +43,7 @@ export interface LoadedInfo {
 }
 
 export interface GenerateStats {
-  /** Prompt length in tokens, including the leading `<bos>`. */
+  /** Prompt length in tokens, including the leading `<bos>` (Gemma). */
   promptTokens: number;
   /** Sampled tokens, including any EOS and any held-back tool-call text. */
   outputTokens: number;
@@ -126,5 +129,17 @@ export const GEMMA_SAMPLING = {
   do_sample: true,
   temperature: 0.8,
   top_k: 40,
+  top_p: 1.0,
+} as const;
+
+/**
+ * Qwen 3.5's recommended non-thinking sampling (temperature 0.7, top_k 20;
+ * its top_p 0.8 is pinned to 1 for the same reason as above — transformers.js
+ * 4.3.0 ignores it).
+ */
+export const QWEN_SAMPLING = {
+  do_sample: true,
+  temperature: 0.7,
+  top_k: 20,
   top_p: 1.0,
 } as const;

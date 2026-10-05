@@ -8,7 +8,7 @@ import {
   isLocalGemmaId,
   resolveActiveLocalModelIdOrDefault,
 } from './models';
-import { totalBytes } from './modelFiles';
+import { hasManifest, totalBytes } from './modelFiles';
 
 function cfg(localId: string | undefined): LLMConfig {
   return {
@@ -17,10 +17,16 @@ function cfg(localId: string | undefined): LLMConfig {
 }
 
 describe('LOCAL_GEMMA_MODELS', () => {
-  it('lists exactly the E2B and E4B models', () => {
-    expect(LOCAL_GEMMA_MODELS.map((m) => m.id)).toEqual(['gemma-4-e2b', 'gemma-4-e4b']);
+  it('lists the Gemma 4 E2B / E4B and Qwen 3.5 4B models', () => {
+    expect(LOCAL_GEMMA_MODELS.map((m) => m.id)).toEqual([
+      'gemma-4-e2b',
+      'gemma-4-e4b',
+      'qwen3.5-4b',
+    ]);
     expect(isLocalGemmaId('gemma-4-e2b')).toBe(true);
     expect(isLocalGemmaId('gemma-4-e4b')).toBe(true);
+    expect(isLocalGemmaId('qwen3.5-4b')).toBe(true);
+    expect(getLocalGemmaModel('qwen3.5-4b')?.family).toBe('qwen');
     expect(isLocalGemmaId('custom:foo')).toBe(false);
     expect(getLocalGemmaModel('gemma-4-e4b')?.label).toBe('Gemma 4 E4B');
   });
@@ -29,14 +35,13 @@ describe('LOCAL_GEMMA_MODELS', () => {
     expect(isLocalGemmaId(DEFAULT_LOCAL_GEMMA_ID)).toBe(true);
   });
 
-  it.each(LOCAL_GEMMA_MODELS.map((m) => [m.id, m] as const))(
-    '%s points at an onnx-community Gemma 4 repo',
-    (_id, m) => {
-      expect(m.hfRepoId).toMatch(/^onnx-community\/gemma-4-E[24]B-it-ONNX$/);
-    },
-  );
+  it.each(
+    LOCAL_GEMMA_MODELS.filter((m) => m.family === 'gemma').map((m) => [m.id, m] as const),
+  )('%s points at an onnx-community Gemma 4 repo', (_id, m) => {
+    expect(m.hfRepoId).toMatch(/^onnx-community\/gemma-4-E[24]B-it-ONNX$/);
+  });
 
-  it.each(LOCAL_GEMMA_MODELS.map((m) => [m.id, m] as const))(
+  it.each(LOCAL_GEMMA_MODELS.filter(hasManifest).map((m) => [m.id, m] as const))(
     '%s approxBytes is within 1%% of the file manifest',
     (_id, m) => {
       const actual = totalBytes(m);

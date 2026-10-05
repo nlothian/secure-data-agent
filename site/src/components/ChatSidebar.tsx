@@ -40,7 +40,11 @@ import {
   maybeAutoCompact,
   runCompaction,
 } from '../lib/autoCompaction';
-import { renderConversationForGemma } from '../lib/localLlm/toolPrompt';
+import { getPromptFormat } from '../lib/localLlm/promptFormat';
+import {
+  getLocalGemmaModel,
+  resolveActiveLocalModelIdOrDefault,
+} from '../lib/localLlm/models';
 import { isInputTooLongError, sizeInTokens } from '../lib/localLlm/llmService';
 import * as subAgentStore from '../lib/subAgents/store';
 import { setSubAgentContext } from '../lib/subAgents/context';
@@ -324,10 +328,15 @@ export default function ChatSidebar() {
       if (!isLocalGemmaEndpoint(config.activeEndpoint)) return null;
       const thinkingEnabled =
         config.thinkingEnabled?.[LOCAL_GEMMA_ENDPOINT] ?? false;
-      const prompt = renderConversationForGemma(
+      const tools = buildAgentTools(features);
+      const fmt = getPromptFormat(
+        getLocalGemmaModel(resolveActiveLocalModelIdOrDefault(config))?.family ?? 'gemma',
+        tools,
+      );
+      const prompt = fmt.render(
         buildAgentSystemPrompt(features) + buildCompactionContext(msgs),
-        mapMessagesForLLM(msgs),
-        buildAgentTools(features),
+        fmt.importHistory(mapMessagesForLLM(msgs)),
+        tools,
         thinkingEnabled,
       );
       const tokens = await sizeInTokens(prompt);

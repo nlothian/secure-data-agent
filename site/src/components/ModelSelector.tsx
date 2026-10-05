@@ -194,7 +194,7 @@ export default function ModelSelector({
             onChange={(e) =>
               setThinkingEnabled(LOCAL_GEMMA_ENDPOINT, e.target.checked)
             }
-            aria-label="Enable Gemma thinking mode"
+            aria-label="Enable thinking mode"
           />
           Thinking
         </label>

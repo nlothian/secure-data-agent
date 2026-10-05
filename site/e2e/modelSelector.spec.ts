@@ -100,6 +100,7 @@ test.describe('ModelSelector — predefined Gemma 4 ONNX models', () => {
     await expect(e2b).toContainText('3.1 GB');
     await expect(e4b).toBeVisible();
     await expect(e4b).toContainText('4.9 GB');
+    await expect(page.getByRole('menuitem', { name: /Qwen 3\.5 4B/ })).toBeVisible();
 
     // The old "Advanced" custom-file picker section is gone.
     await expect(page.locator('.chat-model-advanced-toggle')).toHaveCount(0);

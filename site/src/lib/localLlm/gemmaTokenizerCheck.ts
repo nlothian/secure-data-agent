@@ -15,6 +15,7 @@ import {
   TURN_CLOSE,
   TURN_CLOSE_TOKEN_ID,
 } from './gemmaTokens';
+import { IM_END, QWEN_SINGLE_TOKENS } from './qwenTokens';
 
 /**
  * Literal `<bos>` text. The Gemma 4 ONNX tokenizer's post-processor adds NO
@@ -91,5 +92,32 @@ export function checkGemmaTokenizer(t: TokenizerLike, eosIds: number[]): string[
     }
   }
 
+  return problems;
+}
+
+/**
+ * Qwen 3.5 counterpart of `checkGemmaTokenizer`: every structural marker the
+ * Qwen prompt format (`qwenPrompt.ts`) relies on must be one tokenizer entry
+ * that decodes back to itself, and `<|im_end|>` must be an EOS id. Qwen
+ * prompts carry no BOS, so there is no BOS check.
+ */
+export function checkQwenTokenizer(t: TokenizerLike, eosIds: number[]): string[] {
+  const problems: string[] = [];
+  let imEndId: number | undefined;
+  for (const tok of QWEN_SINGLE_TOKENS) {
+    const ids = t.encode(tok, { add_special_tokens: false });
+    if (ids.length !== 1) {
+      problems.push(`${tok} encodes to ${ids.length} ids [${ids.join(',')}], expected 1`);
+      continue;
+    }
+    if (tok === IM_END) imEndId = ids[0];
+    const back = t.decode(ids, { skip_special_tokens: false });
+    if (back !== tok) {
+      problems.push(`${tok} (id ${ids[0]}) decodes to ${JSON.stringify(back)}`);
+    }
+  }
+  if (imEndId !== undefined && !eosIds.includes(imEndId)) {
+    problems.push(`eos_token_id [${eosIds.join(',')}] does not include ${IM_END} (${imEndId})`);
+  }
   return problems;
 }

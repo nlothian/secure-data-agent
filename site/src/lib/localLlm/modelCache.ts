@@ -10,7 +10,7 @@
  * download the user did not ask for.
  */
 import { isLocalModelsMode, type LocalGemmaModel } from './models';
-import { requiredFiles } from './modelFiles';
+import { hasManifest, requiredFiles } from './modelFiles';
 
 /** transformers.js `env.cacheKey` default. */
 export const TRANSFORMERS_CACHE_NAME = 'transformers-cache';
@@ -41,6 +41,8 @@ async function missingFiles(model: LocalGemmaModel) {
  */
 export async function isModelCached(model: LocalGemmaModel): Promise<boolean> {
   if (isLocalModelsMode()) return true;
+  // No manifest: we cannot tell, so never claim it is cached.
+  if (!hasManifest(model)) return false;
   if (typeof caches === 'undefined') return false;
   try {
     return (await missingFiles(model)).length === 0;
@@ -55,6 +57,7 @@ export async function isModelCached(model: LocalGemmaModel): Promise<boolean> {
  */
 export async function uncachedBytes(model: LocalGemmaModel): Promise<number> {
   if (isLocalModelsMode()) return 0;
+  if (!hasManifest(model)) return model.approxBytes;
   const all = requiredFiles(model).reduce((n, f) => n + f.bytes, 0);
   if (typeof caches === 'undefined') return all;
   try {

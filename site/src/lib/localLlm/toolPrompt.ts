@@ -586,3 +586,83 @@ class BodyParser {
     return n;
   }
 }
+
+// ---- reading stored history back ------------------------------------------
+
+/**
+ * One piece of a stored assistant message. Chat history keeps local-model
+ * tool traffic in the Gemma wire format (`formatToolCallToken` /
+ * `formatToolResponseToken`, appended by `streamLocalGemma`'s
+ * `onHistoryDelta`), so another prompt format (Qwen) parses it back here.
+ */
+export type GemmaHistorySegment =
+  | { kind: 'text'; text: string }
+  | { kind: 'call'; name: string; argsJson: string; resultJson: string | null };
+
+function parseToolResponseBody(raw: string): { name: string; json: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('response:')) return null;
+  const rest = trimmed.slice('response:'.length);
+  const braceIdx = rest.indexOf('{');
+  if (braceIdx === -1) return null;
+  const name = rest.slice(0, braceIdx).trim();
+  try {
+    const p = new BodyParser(rest.slice(braceIdx));
+    const obj = p.parseObject();
+    p.skipWs();
+    if (!p.eof()) return null;
+    // `bodyFromJson` wraps non-object results as `value:...`; unwrap them.
+    const keys = Object.keys(obj);
+    const value = keys.length === 1 && keys[0] === 'value' ? obj.value : obj;
+    return { name, json: JSON.stringify(value) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Split a stored assistant message into text and tool-call segments. A tool
+ * call that fails to parse stays in the text unchanged.
+ */
+export function parseGemmaHistory(content: string): GemmaHistorySegment[] {
+  const out: GemmaHistorySegment[] = [];
+  const pushText = (text: string): void => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    if (last && last.kind === 'text') last.text += text;
+    else out.push({ kind: 'text', text });
+  };
+  let cursor = 0;
+  while (cursor < content.length) {
+    const open = content.indexOf(TOOL_CALL_OPEN, cursor);
+    if (open === -1) break;
+    const bodyStart = open + TOOL_CALL_OPEN.length;
+    const close = content.indexOf(TOOL_CALL_CLOSE, bodyStart);
+    if (close === -1) break;
+    const call = parseToolCallBody(content.slice(bodyStart, close));
+    let end = close + TOOL_CALL_CLOSE.length;
+    if (!call) {
+      pushText(content.slice(cursor, end));
+      cursor = end;
+      continue;
+    }
+    pushText(content.slice(cursor, open));
+    let resultJson: string | null = null;
+    if (content.startsWith(TOOL_RESPONSE_OPEN, end)) {
+      const respClose = content.indexOf(TOOL_RESPONSE_CLOSE, end + TOOL_RESPONSE_OPEN.length);
+      if (respClose !== -1) {
+        const resp = parseToolResponseBody(
+          content.slice(end + TOOL_RESPONSE_OPEN.length, respClose),
+        );
+        if (resp) {
+          resultJson = resp.json;
+          end = respClose + TOOL_RESPONSE_CLOSE.length;
+        }
+      }
+    }
+    out.push({ kind: 'call', name: call.name, argsJson: call.argsJson, resultJson });
+    cursor = end;
+  }
+  pushText(content.slice(cursor));
+  return out;
+}

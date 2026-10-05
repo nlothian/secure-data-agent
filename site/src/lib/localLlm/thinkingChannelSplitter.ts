@@ -1,9 +1,10 @@
 /**
- * Streaming splitter that separates Gemma's reasoning ("thought") channel from
- * its body output. Gemma emits a thought channel via the literal markers
+ * Streaming splitter that separates a model's reasoning ("thought") channel
+ * from its body output. Gemma emits a thought channel via the literal markers
  *   `<|channel>thought\n` ... `<channel|>`
  * and we deliberately match only that exact open marker — `<|channel>other\n`
- * etc. is treated as plain body text.
+ * etc. is treated as plain body text. Other families pass their own markers
+ * (Qwen: `<think>` … `</think>`) to `createSplitterState`.
  *
  * In `outside` mode we also recognise a bare `<channel|>` and report it as a
  * `stray-close` event instead of body text. The model sometimes emits
@@ -21,10 +22,19 @@
  * so we never emit half a tag. `flushSplitter` drains whatever is left when
  * the stream ends.
  */
-import { CHANNEL_CLOSE } from './toolPrompt';
+import { CHANNEL_CLOSE } from './gemmaTokens';
 
-const THOUGHT_OPEN = '<|channel>thought\n';
-const THOUGHT_CLOSE = CHANNEL_CLOSE; // '<channel|>'
+/** The literal open/close markers of a model family's reasoning channel. */
+export interface ThinkingMarkers {
+  open: string;
+  close: string;
+}
+
+/** Gemma 4: `<|channel>thought\n` … `<channel|>` (the default). */
+export const GEMMA_THINKING_MARKERS: ThinkingMarkers = {
+  open: '<|channel>thought\n',
+  close: CHANNEL_CLOSE,
+};
 
 export type SplitterMode = 'outside' | 'in-thought';
 
@@ -32,6 +42,7 @@ export interface SplitterState {
   mode: SplitterMode;
   /** Un-emitted trailing chars retained for tag-boundary holdback. */
   buffer: string;
+  markers: ThinkingMarkers;
 }
 
 export type SplitterEvent =
@@ -42,8 +53,11 @@ export type SplitterEvent =
   /** A `<channel|>` seen while already outside a thought channel. */
   | { kind: 'stray-close' };
 
-export function createSplitterState(initialMode: SplitterMode): SplitterState {
-  return { mode: initialMode, buffer: '' };
+export function createSplitterState(
+  initialMode: SplitterMode,
+  markers: ThinkingMarkers = GEMMA_THINKING_MARKERS,
+): SplitterState {
+  return { mode: initialMode, buffer: '', markers };
 }
 
 function pushText(events: SplitterEvent[], kind: 'body' | 'thought', text: string): void {
@@ -59,6 +73,7 @@ function pushText(events: SplitterEvent[], kind: 'body' | 'thought', text: strin
 export function feedSplitter(state: SplitterState, delta: string): SplitterEvent[] {
   state.buffer += delta;
   const events: SplitterEvent[] = [];
+  const { open: THOUGHT_OPEN, close: THOUGHT_CLOSE } = state.markers;
 
   // Loop until we run out of complete markers in the buffer; each iteration
   // either consumes a full marker (transition) or commits as much text as it

@@ -1,20 +1,22 @@
 /**
- * Local Gemma 4 inference worker (transformers.js on WebGPU).
+ * Local LLM inference worker (transformers.js on WebGPU).
  *
- * Hosts one tokenizer + `Gemma4ForCausalLM` at a time and speaks the
+ * Hosts one tokenizer + causal LM at a time (`Gemma4ForCausalLM` or
+ * `Qwen3_5ForCausalLM`, by the load request's `family`) and speaks the
  * `LlmWorkerIn` / `LlmWorkerOut` protocol (`llmWorkerProtocol.ts`) with
  * `lib/localLlm/llmService.ts`. Keeping inference off the main thread means
  * prefill no longer freezes the UI.
  *
  * Import discipline: NEVER import `toolPrompt.ts` here — it pulls in
  * `streamChat` → `agentTools` → DuckDB / Pyodide. Token constants come from
- * the leaf module `gemmaTokens.ts`.
+ * the leaf modules `gemmaTokens.ts` / `qwenTokens.ts`.
  */
 
 import {
   env,
   AutoTokenizer,
   Gemma4ForCausalLM,
+  Qwen3_5ForCausalLM,
   TextStreamer,
   InterruptableStoppingCriteria,
   DynamicCache,
@@ -26,19 +28,23 @@ import {
 } from '@huggingface/transformers';
 import {
   GEMMA_SAMPLING,
+  QWEN_SAMPLING,
   LLM_KV_KEEP_ON_DECODE_INTERRUPT,
   LLM_KV_REUSE,
   PREFILL_CHUNK_TOKENS,
   type GenerateStats,
   type LlmErrorCode,
+  type LlmModelFamily,
   type LoadedInfo,
   type LlmWorkerIn,
   type LlmWorkerOut,
   type RawProgressEvent,
 } from '../lib/localLlm/llmWorkerProtocol';
 import { TURN_CLOSE_TOKEN_ID } from '../lib/localLlm/gemmaTokens';
+import { IM_END } from '../lib/localLlm/qwenTokens';
 import {
   checkGemmaTokenizer,
+  checkQwenTokenizer,
   withBosText,
   type TokenizerLike,
 } from '../lib/localLlm/gemmaTokenizerCheck';
@@ -83,7 +89,7 @@ async function runModel<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** Used when `generation_config.json` is missing or carries no EOS ids. */
+/** Gemma: used when `generation_config.json` is missing or carries no EOS ids. */
 const FALLBACK_EOS_IDS = [1, TURN_CLOSE_TOKEN_ID];
 
 if (isLocalModelsMode()) {
@@ -102,6 +108,8 @@ let model: PreTrainedModel | null = null;
 let tokenizer: PreTrainedTokenizer | null = null;
 /** Set together with `model`; lets a repeat `load` of the same repo short-circuit. */
 let loadedInfo: LoadedInfo | null = null;
+/** Family of the loaded model; selects BOS handling and sampling. */
+let family: LlmModelFamily = 'gemma';
 /** EOS ids from `generation_config`, dropped from the streamed text. */
 let eosIds: Set<number> = new Set([TURN_CLOSE_TOKEN_ID]);
 /** Serialises load/dispose so two loads never race on the GPU. */
@@ -167,13 +175,19 @@ function asTokenizerLike(t: PreTrainedTokenizer): TokenizerLike {
 type PromptEncoding = { input_ids: Tensor; attention_mask: Tensor };
 
 /**
- * Tokenise a rendered prompt with exactly one leading `<bos>`. The Gemma 4
- * tokenizer does not add it itself (its post-processor has no special
- * tokens), so we prepend the literal text — as the official chat template
- * does — and encode without special tokens.
+ * Tokenise a rendered prompt. Gemma: with exactly one leading `<bos>` — the
+ * Gemma 4 tokenizer does not add it itself (its post-processor has no special
+ * tokens), so we prepend the literal text, as the official chat template
+ * does. Qwen's template has no BOS. Either way, encode without special
+ * tokens so the ids are exactly the rendered text.
  */
 function encodePrompt(t: PreTrainedTokenizer, text: string): PromptEncoding {
-  return t(withBosText(text), { add_special_tokens: false }) as unknown as PromptEncoding;
+  const prompt = family === 'gemma' ? withBosText(text) : text;
+  return t(prompt, { add_special_tokens: false }) as unknown as PromptEncoding;
+}
+
+function samplingFor(f: LlmModelFamily) {
+  return f === 'qwen' ? QWEN_SAMPLING : GEMMA_SAMPLING;
 }
 
 /** Chain `task` after any in-flight load/dispose. */
@@ -219,7 +233,7 @@ async function disposeQuietly(m: PreTrainedModel | null | undefined): Promise<vo
   }
 }
 
-async function handleLoad(id: number, hfId: string): Promise<void> {
+async function handleLoad(id: number, hfId: string, nextFamily: LlmModelFamily): Promise<void> {
   latestLoadRequestId = id;
   await serialised(async () => {
     if (id !== latestLoadRequestId) {
@@ -271,9 +285,12 @@ async function handleLoad(id: number, hfId: string): Promise<void> {
       // allSettled, not all: if the tokenizer fails while the model is still
       // loading, we must wait for the model and dispose it rather than leak
       // its GPU sessions.
+      // Text-only load: each class, given its `…ForConditionalGeneration`
+      // config, loads just `embed_tokens` + `decoder_model_merged`.
+      const ModelClass = nextFamily === 'qwen' ? Qwen3_5ForCausalLM : Gemma4ForCausalLM;
       const [tokRes, mdlRes] = await Promise.allSettled([
         AutoTokenizer.from_pretrained(hfId, { progress_callback }),
-        Gemma4ForCausalLM.from_pretrained(hfId, {
+        ModelClass.from_pretrained(hfId, {
           dtype: LOCAL_GEMMA_DTYPE,
           device: 'webgpu',
           progress_callback,
@@ -290,13 +307,18 @@ async function handleLoad(id: number, hfId: string): Promise<void> {
 
       let eos = normaliseEos(mdl.generation_config?.eos_token_id);
       if (eos.length === 0) {
+        const fallback =
+          nextFamily === 'qwen'
+            ? tok.encode(IM_END, { add_special_tokens: false }).slice(0, 1)
+            : FALLBACK_EOS_IDS;
         console.warn(
           `[llm.worker] ${hfId}: generation_config has no eos_token_id ` +
-            `(generation_config.json missing?); falling back to [${FALLBACK_EOS_IDS.join(', ')}].`,
+            `(generation_config.json missing?); falling back to [${fallback.join(', ')}].`,
         );
-        eos = FALLBACK_EOS_IDS;
+        eos = fallback;
       }
-      const problems = checkGemmaTokenizer(asTokenizerLike(tok), eos);
+      const check = nextFamily === 'qwen' ? checkQwenTokenizer : checkGemmaTokenizer;
+      const problems = check(asTokenizerLike(tok), eos);
       if (problems.length > 0) {
         await disposeQuietly(mdl);
         postError(id, 'tokenizer-mismatch', `Tokenizer check failed: ${problems.join('; ')}`, {
@@ -307,6 +329,7 @@ async function handleLoad(id: number, hfId: string): Promise<void> {
 
       model = mdl;
       tokenizer = tok;
+      family = nextFamily;
       eosIds = new Set(eos);
       loadedInfo = { hfId, eosIds: eos, files: [...files] };
       post({ type: 'loaded', id, info: loadedInfo });
@@ -372,7 +395,7 @@ async function handleGenerate(id: number, prompt: string): Promise<void> {
   const mdl = model;
   const tok = tokenizer;
   if (!mdl || !tok) {
-    postError(id, 'not-loaded', 'Local Gemma model is not loaded.');
+    postError(id, 'not-loaded', 'Local model is not loaded.');
     return;
   }
   if (active) {
@@ -518,7 +541,7 @@ async function runGeneration(
         // generate keep (not dispose) it.
         ...(kv ? { past_key_values: kv } : {}),
         max_new_tokens: maxNewTokens,
-        ...GEMMA_SAMPLING,
+        ...samplingFor(family),
         streamer,
         stopping_criteria: stop,
       }),
@@ -572,7 +595,7 @@ async function runGeneration(
 
 function handleCount(id: number, text: string): void {
   if (!tokenizer) {
-    postError(id, 'not-loaded', 'Local Gemma model is not loaded.');
+    postError(id, 'not-loaded', 'Local model is not loaded.');
     return;
   }
   try {
@@ -602,7 +625,7 @@ self.onmessage = (ev: MessageEvent<LlmWorkerIn>) => {
   const msg = ev.data;
   switch (msg.type) {
     case 'load':
-      void handleLoad(msg.id, msg.hfId);
+      void handleLoad(msg.id, msg.hfId, msg.family);
       break;
     case 'generate':
       void handleGenerate(msg.id, msg.prompt);

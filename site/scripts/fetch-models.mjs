@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
  * Populate the gitignored repo-root `models/` folder with the text-only q4f16
- * Gemma 4 ONNX files, laid out exactly as transformers.js expects under
- * `/models/<hfRepoId>/…` when `PUBLIC_LOCAL_MODELS=1`.
+ * ONNX files of the local models, laid out exactly as transformers.js expects
+ * under `/models/<hfRepoId>/…` when `PUBLIC_LOCAL_MODELS=1`.
  *
- *   npm run models:fetch -- e2b      # ≈ 3.1 GB
- *   npm run models:fetch -- e4b      # ≈ 4.9 GB
- *   npm run models:fetch -- all
+ *   npm run models:fetch -- e2b      # Gemma 4 E2B, ≈ 3.1 GB
+ *   npm run models:fetch -- e4b      # Gemma 4 E4B, ≈ 4.9 GB
+ *   npm run models:fetch -- qwen4b   # Qwen 3.5 4B (needs its manifest entry)
+ *   npm run models:fetch -- all      # every alias that has a manifest entry
  *
  * Reads the same manifest the app uses (`src/lib/localLlm/modelFiles.json`),
  * streams each file to `<path>.part` then renames, skips files whose on-disk
@@ -31,21 +32,29 @@ const manifestPath = path.resolve(
   'modelFiles.json',
 );
 
+// Keep in sync with `hfRepoId` in src/lib/localLlm/models.ts.
 const ALIASES = {
   e2b: 'onnx-community/gemma-4-E2B-it-ONNX',
   e4b: 'onnx-community/gemma-4-E4B-it-ONNX',
+  qwen4b: 'onnx-community/Qwen3.5-4B-ONNX',
 };
 
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
 function usage() {
-  console.error('usage: npm run models:fetch -- <e2b|e4b|all>');
+  console.error(`usage: npm run models:fetch -- <${Object.keys(ALIASES).join('|')}|all>`);
   process.exit(2);
 }
 
 const arg = (process.argv[2] ?? '').toLowerCase();
 let repos;
-if (arg === 'all') repos = Object.values(ALIASES);
+if (arg === 'all') {
+  repos = Object.values(ALIASES).filter((repo) => {
+    if (manifest[repo]) return true;
+    console.warn(`skipping ${repo}: no manifest entry (run \`npm run models:manifest -- ${repo}\`)`);
+    return false;
+  });
+}
 else if (ALIASES[arg]) repos = [ALIASES[arg]];
 else usage();
 
@@ -103,7 +112,9 @@ async function fetchFile(repo, file) {
 for (const repo of repos) {
   const m = manifest[repo];
   if (!m) {
-    console.error(`no manifest entry for ${repo}`);
+    console.error(
+      `no manifest entry for ${repo} — run \`npm run models:manifest -- ${repo}\` first`,
+    );
     process.exit(1);
   }
   const files = [...m.required, ...m.optional];

@@ -1,5 +1,6 @@
 /**
- * Main-thread RPC client for the in-browser Gemma 4 provider.
+ * Main-thread RPC client for the in-browser local-model provider (Gemma 4,
+ * Qwen 3.5).
  *
  * All inference runs in `workers/llm.worker.ts` (transformers.js on WebGPU);
  * this module owns the single long-lived worker, mints request ids, routes
@@ -137,7 +138,7 @@ async function assertWebGpuReady(): Promise<void> {
   }
   if (gpu.f16 === false) {
     throw new Error(
-      'This GPU does not support shader-f16, which the q4f16 Gemma weights require.',
+      'This GPU does not support shader-f16, which the q4f16 model weights require.',
     );
   }
 }
@@ -209,7 +210,9 @@ export async function ensureLoaded(modelId: string): Promise<void> {
               if (msg.event.status === 'done' && msg.event.file) {
                 doneFiles.add(msg.event.file);
               }
-              const allRequiredDone = [...required].every((p) => doneFiles.has(p));
+              // With no manifest (a newly added repo) only `ready` ends the fetch phase.
+              const allRequiredDone =
+                required.size > 0 && [...required].every((p) => doneFiles.has(p));
               if (!initStarted && (msg.event.status === 'ready' || allRequiredDone)) {
                 initStarted = true;
                 clearStall();
@@ -260,7 +263,7 @@ export async function ensureLoaded(modelId: string): Promise<void> {
               return;
           }
         });
-        post({ type: 'load', id: requestId, hfId: model.hfRepoId });
+        post({ type: 'load', id: requestId, hfId: model.hfRepoId, family: model.family });
         armStall();
       });
     } finally {
@@ -312,7 +315,8 @@ let pendingGeneration: Promise<void> | null = null;
 let activeGeneration: { id: number; abort: () => void } | null = null;
 
 /**
- * Stream a completion for an already-rendered Gemma prompt. Aborting via
+ * Stream a completion for an already-rendered prompt (in the loaded model's
+ * own chat template — see `promptFormat.ts`). Aborting via
  * `signal` (or `cancel()`) interrupts decode and resolves with the text
  * produced so far — it never rejects for an abort. If the worker does not
  * acknowledge the cancel within `ABORT_WATCHDOG_MS`, the worker is recycled.
@@ -331,7 +335,7 @@ export async function generate(opts: GenerateOptions): Promise<string> {
   if (signal?.aborted) return '';
 
   if (!loadedModelId) {
-    throw new Error('Local Gemma model is not loaded. Call ensureLoaded() first.');
+    throw new Error('Local model is not loaded. Call ensureLoaded() first.');
   }
 
   let releaseGate: () => void = () => {};
@@ -457,7 +461,7 @@ export function cancel(): void {
 }
 
 /**
- * Token count of `text` (including the leading `<bos>`) under the loaded
+ * Token count of `text` (including the leading `<bos>` for Gemma) under the loaded
  * model's tokenizer, or `null` when no model is loaded or counting failed.
  */
 export async function sizeInTokens(text: string): Promise<number | null> {

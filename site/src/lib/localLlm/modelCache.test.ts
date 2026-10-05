@@ -90,4 +90,13 @@ describe('isModelCached', () => {
     expect(await isModelCached(model)).toBe(true);
     expect(api.opened).toEqual([]);
   });
+
+  it('is false for a model with no manifest entry, sized by approxBytes', async () => {
+    const unlisted: LocalGemmaModel = { ...model, hfRepoId: 'example/not-in-manifest' };
+    // Even an "everything is cached" store must not count: there is no file list.
+    const api = fakeCaches(new Set(), {});
+    api.open = async () => ({ match: async () => new Response() });
+    expect(await isModelCached(unlisted)).toBe(false);
+    expect(await uncachedBytes(unlisted)).toBe(unlisted.approxBytes);
+  });
 });

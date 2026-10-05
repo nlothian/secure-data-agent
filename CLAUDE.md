@@ -24,10 +24,12 @@ app runs entirely in the browser. Treat all React components as client-only:
 
 ## Local model files for dev/e2e
 
-The repo-root `models/` directory is gitignored. It can hold the Gemma 4
-ONNX files so the dev server serves them locally instead of the app
-downloading them from the Hugging Face Hub. Layout (E4B is the same under
-`gemma-4-E4B-it-ONNX/`, and its decoder adds a second `_data_1` shard):
+The repo-root `models/` directory is gitignored. It can hold the local
+models' ONNX files (Gemma 4 E2B / E4B, Qwen 3.5 4B) so the dev server serves
+them locally instead of the app downloading them from the Hugging Face Hub.
+Layout (E4B is the same under `gemma-4-E4B-it-ONNX/`, and its decoder adds a
+second `_data_1` shard; Qwen follows the same text-only file set under its
+own repo id):
 
 ```
 models/onnx-community/gemma-4-E2B-it-ONNX/
@@ -46,8 +48,34 @@ models/onnx-community/gemma-4-E2B-it-ONNX/
 The expected files and byte sizes are listed in
 `site/src/lib/localLlm/modelFiles.json`.
 
+### Qwen 3.5 4B
+
+The Qwen entry in `site/src/lib/localLlm/models.ts` (`qwen3.5-4b`) points at
+a placeholder repo id, `onnx-community/Qwen3.5-4B-ONNX`, until an ONNX export
+is chosen. The export needs text-only q4f16 `embed_tokens` and
+`decoder_model_merged` files, like the Gemma repos. Once you've chosen one:
+
+1. Set `hfRepoId` in `models.ts`, and the `qwen4b` alias in
+   `site/scripts/fetch-models.mjs` and in
+   `site/e2e/llm/realModelSql.spec.ts`.
+2. Run `cd site && npm run models:manifest -- <repo>` to write its
+   `modelFiles.json` entry. Set `approxBytes` to the printed total.
+3. Run `npm run models:fetch -- qwen4b`, then `npx vitest run
+   src/lib/localLlm/qwenTokenizer.test.ts`. That test checks the hand-written
+   Qwen prompt renderer (`qwenPrompt.ts`) against the export's own
+   `chat_template.jinja`. It skips while the files are absent.
+
+Until the manifest entry exists, the model still loads, but it is never
+reported as cached (no boot-time eager load) and its size is `approxBytes`.
+
+Every model family has its own chat template (`promptFormat.ts`). Chat
+history and the UI always use the Gemma wire format; the Qwen format
+converts stored history on the way in.
+
+### Fetching and running
+
 1. Populate it with `cd site && npm run models:fetch -- e2b` (or `e4b` /
-   `all`), or the equivalent Hugging Face CLI command:
+   `qwen4b` / `all`), or the equivalent Hugging Face CLI command:
 
    ```sh
    hf download onnx-community/gemma-4-E2B-it-ONNX \
@@ -70,7 +98,8 @@ The expected files and byte sizes are listed in
 `npm run test:llm_tests` starts its own dev server on :4322 with
 `PUBLIC_LOCAL_MODELS=1` (it never reuses an existing server). It skips
 unless every required file for the chosen model is present with the right
-size. It defaults to E4B; set `GDA_E2E_MODEL=gemma-4-e2b` to use E2B.
+size. It defaults to E4B; set `GDA_E2E_MODEL=gemma-4-e2b` to use E2B, or
+`GDA_E2E_MODEL=qwen3.5-4b` for Qwen.
 
 To exercise a specific tour stage without walking the whole flow, start
 a one-stage tour via the controller in DevTools:

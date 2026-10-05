@@ -6,20 +6,17 @@ import { compactConversation } from '../compactConversation';
 import { COMPACTION_HEADER } from '../autoCompaction';
 import * as tokenUsageStore from '../tokenUsageStore';
 import type { ChatMessage } from '../../types/chat';
-import { resolveActiveLocalModelIdOrDefault } from './models';
+import { getLocalGemmaModel, resolveActiveLocalModelIdOrDefault } from './models';
 import { ensureLoaded, generate } from './llmService';
 import type { GenerateStats } from './llmWorkerProtocol';
 import {
   formatToolCallToken,
   formatToolResponseToken,
-  parseStreamForToolCall,
-  renderConversationForGemma,
   CHANNEL_OPEN,
   CHANNEL_CLOSE,
-  TOOL_CALL_OPEN,
-  STRING_DELIM,
   type InternalMessage,
 } from './toolPrompt';
+import { getPromptFormat, type ParsedToolCall } from './promptFormat';
 import {
   setLlmPreparingToolCall,
   setStreamingSource,
@@ -33,72 +30,12 @@ import {
 import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
 
 const MAX_TOOL_ITERATIONS = 10;
+/**
+ * Canonical (Gemma) thought-channel open marker. Whatever the model family,
+ * this is what the UI and stored history see; the model's native markers
+ * only go into the in-progress turn replay (`assistantTurnConv`).
+ */
 const THINKING_OPEN_MARKER = `${CHANNEL_OPEN}thought\n`;
-
-/**
- * Inspect the held-back tool-call buffer (`parsed.rest`) and decide what the
- * throbber should advertise. Returns `null` if the buffer doesn't yet contain
- * a complete `<|tool_call>` opener (so we're still in plain-text holdback or
- * idle), `{ name: null }` if the opener is present but the `call:NAME{`
- * prefix isn't parseable yet, and `{ name }` once the name is available.
- */
-function extractPreparingToolCall(
-  buffer: string,
-): { name: string | null } | null {
-  if (!buffer.startsWith(TOOL_CALL_OPEN)) return null;
-  const after = buffer.slice(TOOL_CALL_OPEN.length);
-  const callPrefix = 'call:';
-  if (!after.startsWith(callPrefix)) {
-    // Opener present but we don't even have `call:` yet — model is still
-    // emitting the prefix.
-    return { name: null };
-  }
-  const rest = after.slice(callPrefix.length);
-  // Name runs up to `{` (start of body) or whitespace.
-  const match = rest.match(/^([A-Za-z0-9_]+)/);
-  if (!match) return { name: null };
-  return { name: match[1] };
-}
-
-/**
- * Tools whose body has a single "main" code/sql field that we want to stream
- * into the corresponding pane's editor as it's generated. The key is the
- * argument name in the Gemma tool-call body (e.g. `code:<|"|>...<|"|>`).
- */
-const STREAMING_FIELDS: Record<string, { kind: 'python' | 'sql' | 'react'; key: string }> = {
-  RunPython: { kind: 'python', key: 'code' },
-  RunSQL: { kind: 'sql', key: 'sql' },
-  RunReact: { kind: 'react', key: 'code' },
-};
-
-/**
- * Pull the partial source string for a streaming tool-call body. Returns the
- * pane kind and the substring between the opening `<key>:<|"|>` and either
- * the closing `<|"|>` (if it has arrived) or the current end of the buffer.
- * Returns `null` if the body isn't yet shaped like a recognised streaming
- * tool, or the relevant field hasn't started yet.
- */
-function extractStreamingCode(
-  buffer: string,
-): { kind: 'python' | 'sql' | 'react'; source: string } | null {
-  if (!buffer.startsWith(TOOL_CALL_OPEN)) return null;
-  const after = buffer.slice(TOOL_CALL_OPEN.length);
-  const callPrefix = 'call:';
-  if (!after.startsWith(callPrefix)) return null;
-  const rest = after.slice(callPrefix.length);
-  const nameMatch = rest.match(/^([A-Za-z0-9_]+)\{/);
-  if (!nameMatch) return null;
-  const spec = STREAMING_FIELDS[nameMatch[1]];
-  if (!spec) return null;
-  const body = rest.slice(nameMatch[0].length);
-  const opener = `${spec.key}:${STRING_DELIM}`;
-  const openerIdx = body.indexOf(opener);
-  if (openerIdx === -1) return null;
-  const valStart = openerIdx + opener.length;
-  const closeIdx = body.indexOf(STRING_DELIM, valStart);
-  const source = closeIdx === -1 ? body.slice(valStart) : body.slice(valStart, closeIdx);
-  return { kind: spec.kind, source };
-}
 
 /**
  * Adapt InternalMessage[] for compactConversation by folding tool-role
@@ -219,6 +156,7 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
   };
 
   const modelId = resolveActiveLocalModelIdOrDefault(config);
+  const fmt = getPromptFormat(getLocalGemmaModel(modelId)?.family ?? 'gemma', tools ?? []);
 
   const thinkingEnabled = config.thinkingEnabled?.[LOCAL_GEMMA_ENDPOINT] ?? false;
 
@@ -235,13 +173,14 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
     .join('\n\n')
     .trim();
 
-  const conv: InternalMessage[] = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) =>
-      m.role === 'assistant'
-        ? { role: 'assistant' as const, content: m.content }
-        : { role: 'user' as const, content: m.content },
-    );
+  const conv: InternalMessage[] = fmt.importHistory(
+    messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
+        role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+        content: m.content,
+      })),
+  );
 
   try {
     await ensureLoaded(modelId);
@@ -252,7 +191,7 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
         return;
       }
 
-      const prompt = renderConversationForGemma(systemPrompt, conv, tools ?? [], thinkingEnabled);
+      const prompt = fmt.render(systemPrompt, conv, tools ?? [], thinkingEnabled);
 
       // Three parallel buffers:
       //  - `assistantTurnText`: what the UI renders (thought markers + thoughts
@@ -260,17 +199,18 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       //  - `assistantTurnHistory`: thought-free; persists into chat history so
       //    *past* turns re-fed on later user messages follow the template's
       //    bare-past-turn rule.
-      //  - `assistantTurnConv`: byte-exact replay of the model's output
-      //    (thought markers, thoughts, stray closes, body). It is pushed into
+      //  - `assistantTurnConv`: byte-exact replay of the model's output in its
+      //    native format (thought markers, thoughts, stray closes, body, plus
+      //    whatever the prompt pre-filled for this turn). It is pushed into
       //    `conv` for the rest of this turn: the template replays reasoning for
       //    messages after the last user turn, and an exact replay is what lets
       //    the worker reuse its KV cache across tool iterations.
       let assistantTurnText = '';
       let assistantTurnHistory = '';
       let assistantTurnConv = '';
-      // Body text minus any stray `<channel|>` → UI + persisted history.
+      // Body text minus any stray close marker → UI + persisted history.
       const emitVisible = (text: string): void => {
-        const visible = text.split(CHANNEL_CLOSE).join('');
+        const visible = text.split(fmt.markers.close).join('');
         if (!visible) return;
         assistantTurnText += visible;
         assistantTurnHistory += visible;
@@ -279,26 +219,25 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       };
       // Body-only buffer for the existing tool-call streaming parser.
       let toolBuffer = '';
-      let pendingToolCall: { name: string; argsJson: string } | null = null;
+      let pendingToolCall: ParsedToolCall | null = null;
 
-      // When thinking is on, the very first iteration's prompt ends with an
-      // open `<|channel>thought\n`, so the model resumes inside the thought
-      // channel. Subsequent iterations after a tool response do NOT add a
-      // fresh open, so they start `outside`.
       // Per-iteration controller: aborted by the outer signal, or by us once a
       // complete tool call has been parsed (no point decoding past it).
       const iterCtrl = new AbortController();
       const forwardAbort = (): void => iterCtrl.abort();
       signal?.addEventListener('abort', forwardAbort, { once: true });
 
-      const splitter = createSplitterState(
-        thinkingEnabled && iter === 0 ? 'in-thought' : 'outside',
-      );
+      // Where this generation starts. Gemma: with thinking on, only the first
+      // iteration's prompt ends inside an open thought channel (after a tool
+      // response the same turn continues). Qwen: every iteration opens a new
+      // assistant turn whose prompt pre-fills a `<think>` prefix.
+      const turnStart = fmt.turnStart(thinkingEnabled, iter);
+      const splitter = createSplitterState(turnStart.mode, fmt.markers);
+      assistantTurnConv += turnStart.convPrefix;
       // For the in-thought start, surface the (already-emitted-in-prompt)
       // open marker to the UI so the parser sees a complete thinking block.
-      if (thinkingEnabled && iter === 0) {
+      if (turnStart.mode === 'in-thought') {
         assistantTurnText += THINKING_OPEN_MARKER;
-        assistantTurnConv += THINKING_OPEN_MARKER;
         emit(THINKING_OPEN_MARKER);
       }
 
@@ -306,13 +245,13 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
         if (pendingToolCall) return;
         if (e.kind === 'open') {
           assistantTurnText += THINKING_OPEN_MARKER;
-          assistantTurnConv += THINKING_OPEN_MARKER;
+          assistantTurnConv += fmt.markers.open;
           emit(THINKING_OPEN_MARKER);
           return;
         }
         if (e.kind === 'close') {
           assistantTurnText += CHANNEL_CLOSE;
-          assistantTurnConv += CHANNEL_CLOSE;
+          assistantTurnConv += fmt.markers.close;
           emit(CHANNEL_CLOSE);
           return;
         }
@@ -322,14 +261,14 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
           emit(e.text);
           return;
         }
-        // body (or a stray `<channel|>` the model emitted outside a thought
+        // body (or a stray close marker the model emitted outside a thought
         // channel) — route through the tool-call streaming parser so partial
-        // `<|tool_call>` prefixes stay held back. The stray close travels
+        // tool-call openers stay held back. The stray close travels
         // through the same buffer so it lands at its true position in the
         // byte-exact `assistantTurnConv` replay; it is stripped from what the
         // UI and persisted history see (`emitVisible`).
-        toolBuffer += e.kind === 'stray-close' ? CHANNEL_CLOSE : e.text;
-        const parsed = parseStreamForToolCall(toolBuffer);
+        toolBuffer += e.kind === 'stray-close' ? fmt.markers.close : e.text;
+        const parsed = fmt.parseStreamForToolCall(toolBuffer);
         if (parsed.emitText) {
           assistantTurnConv += parsed.emitText;
           emitVisible(parsed.emitText);
@@ -344,8 +283,8 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
           // Stop decoding now — anything after the call is discarded anyway.
           iterCtrl.abort();
         } else {
-          setLlmPreparingToolCall(extractPreparingToolCall(toolBuffer));
-          const streaming = extractStreamingCode(toolBuffer);
+          setLlmPreparingToolCall(fmt.extractPreparingToolCall(toolBuffer));
+          const streaming = fmt.extractStreamingCode(toolBuffer);
           if (streaming) {
             setStreamingSource(streaming.kind, streaming.source);
           }
@@ -395,14 +334,14 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
 
       if (iterStats) reportUsage(iterStats);
 
-      const tc: { name: string; argsJson: string } = pendingToolCall;
-      const toolCallToken = formatToolCallToken(tc.name, tc.argsJson);
+      const tc: ParsedToolCall = pendingToolCall;
 
       conv.push({
         role: 'assistant',
-        content: assistantTurnConv + toolCallToken,
+        content: assistantTurnConv + fmt.toolCallForConv(tc),
       });
-      emitHistory(toolCallToken);
+      // History always stores the canonical (Gemma) token.
+      emitHistory(formatToolCallToken(tc.name, tc.argsJson));
 
       if (signal?.aborted) {
         onDone(accumulatedText);

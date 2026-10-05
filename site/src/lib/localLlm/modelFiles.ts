@@ -12,6 +12,11 @@
  * The worker reports every file it actually saw (`LoadedInfo.files`) so a
  * manifest gap shows up in dev as a console warning rather than a silent
  * "not cached" answer.
+ *
+ * A model whose repo has no manifest entry yet (a newly added export) gets
+ * empty file lists: it is never reported as cached (so the boot-time eager
+ * load never fires for it) and its download size falls back to
+ * `approxBytes`. `npm run models:manifest -- <repo>` generates the entry.
  */
 import manifest from './modelFiles.json';
 import type { LocalGemmaModel } from './models';
@@ -28,10 +33,14 @@ interface RepoManifest {
 
 const MANIFEST = manifest as Record<string, RepoManifest>;
 
+const EMPTY_MANIFEST: RepoManifest = { required: [], optional: [] };
+
+export function hasManifest(model: LocalGemmaModel): boolean {
+  return model.hfRepoId in MANIFEST;
+}
+
 function repoManifest(model: LocalGemmaModel): RepoManifest {
-  const m = MANIFEST[model.hfRepoId];
-  if (!m) throw new Error(`No file manifest for ${model.hfRepoId}`);
-  return m;
+  return MANIFEST[model.hfRepoId] ?? EMPTY_MANIFEST;
 }
 
 export function requiredFiles(model: LocalGemmaModel): readonly ModelFile[] {

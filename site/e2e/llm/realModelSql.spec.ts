@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 // files / absent WebGPU is a SKIP, not a failure — consistent with the
 // project stance that e2e is environmentally red, not a regression signal.
 
-type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b';
+type ModelId = 'gemma-4-e2b' | 'gemma-4-e4b' | 'qwen3.5-4b';
 
 // Kept in lockstep with src/lib/localLlm/models.ts. That module reads
 // import.meta.env, so it is not imported from Node here.
@@ -35,6 +35,11 @@ const MODELS: Record<ModelId, { repo: string; label: string; fetchArg: string }>
     repo: 'onnx-community/gemma-4-E4B-it-ONNX',
     label: 'Gemma 4 E4B',
     fetchArg: 'e4b',
+  },
+  'qwen3.5-4b': {
+    repo: 'onnx-community/Qwen3.5-4B-ONNX',
+    label: 'Qwen 3.5 4B',
+    fetchArg: 'qwen4b',
   },
 };
 
@@ -83,9 +88,9 @@ if (!MODEL_EXISTS) {
     `\n[realModelSql] SKIPPED: ${MODEL.repo} is missing or incomplete under\n` +
       `  ${MODEL_DIR}\n` +
       `  Missing / wrong-size: ${MISSING_FILES.map((f) => f.path).join(', ')}\n` +
-      `  This gated heavyweight spec only runs when the local Gemma ONNX files\n` +
+      `  This gated heavyweight spec only runs when the local model's ONNX files\n` +
       `  are present. Fetch them with: cd site && npm run models:fetch -- ${MODEL.fetchArg}\n` +
-      `  (select the model with GDA_E2E_MODEL=gemma-4-e2b|gemma-4-e4b), then\n` +
+      `  (select the model with GDA_E2E_MODEL=${Object.keys(MODELS).join('|')}), then\n` +
       `  run: npm run test:llm_tests\n`,
   );
 }

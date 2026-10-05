@@ -537,11 +537,11 @@ function LocalGemmaRow({
         onChange={handleRadioChange}
         disabled={!supported || checking}
         style={styles.radio}
-        aria-label="Use Local Gemma 4 (WebGPU)"
+        aria-label="Use a local model (WebGPU)"
         title={!supported && reason ? reason : undefined}
       />
       <div style={styles.middle}>
-        <div style={styles.builtInLabel}>Local Gemma 4 (WebGPU)</div>
+        <div style={styles.builtInLabel}>Local model (WebGPU)</div>
         <div style={styles.builtInUrl}>Runs in your browser via transformers.js (ONNX Runtime, WebGPU)</div>
         {!supported && !detecting && reason ? (
           <p style={styles.localHint}>{reason}</p>
@@ -558,7 +558,7 @@ function LocalGemmaRow({
           value={selectedId}
           onChange={(e) => onPickModel(e.target.value as LocalGemmaId)}
           disabled={!supported}
-          aria-label="Local Gemma model"
+          aria-label="Local model"
           style={styles.selectEl}
         >
           {LOCAL_GEMMA_MODELS.map((m) => (
