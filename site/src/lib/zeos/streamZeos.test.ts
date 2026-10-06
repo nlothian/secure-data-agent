@@ -6,6 +6,7 @@ import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
 import type { ZeosChatEngine, ZeosChatOpenOptions, ZeosChatRun, ZeosEvent } from './zeosChatEngine';
 import type { ZeosImportTurn } from './zeosHistory';
 import { __setZeosEngineForTests, refusalReason, streamZeos, ZEOS_REFUSAL } from './streamZeos';
+import { ZEOS_TOOL_CLASSES, ZEOS_TRUSTED_RESULTS } from './zeosToolClasses';
 import * as store from './zeosSessionStore';
 
 // A read-only RunSQL runs under DuckDB with extension autoloading off; here
@@ -226,6 +227,9 @@ describe('streamZeos', () => {
     expect(engine.opened[0].systemPrompt).toMatch(/^# Tools\n/);
     expect(engine.opened[0].systemPrompt).toContain('You are a data agent.');
     expect(engine.opened[0].systemPrompt).not.toContain('"RunSubAgent"');
+    // The policy tables themselves, not copies that could drift.
+    expect(engine.opened[0].toolClasses).toBe(ZEOS_TOOL_CLASSES);
+    expect(engine.opened[0].trustedResults).toBe(ZEOS_TRUSTED_RESULTS);
     expect(c.trust.at(-1)).toEqual({ integrity: 2, ring: 2, toolRings: [] });
   });
 
