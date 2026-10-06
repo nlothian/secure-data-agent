@@ -1,8 +1,8 @@
 {
-  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos",
+  "repo": "/private/tmp/claude-501/-Users-nlothian-dev-fifthvertex-secure-data-agent/c3c3d38e-1ba1-4009-aaed-e45f84260458/scratchpad/zeos-main",
   "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
   "branch": "main",
-  "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
+  "commit": "28063254552caf21a8f261920ce9c1dcd8ac7ddf",
   "dirty": false,
   "files": {
     "frames.js": "633ba7c653e4e80ff9b4a963a936cd72193ed2f2ea89ea7d830ed414f76dea3f",

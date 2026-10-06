@@ -248,6 +248,33 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     expect(masked).toEqual([{ name: 'WriteLines', hidden: ['ListInputs result #1'] }]);
   });
 
+  test('an identical repeated RunSQL gets the repeat note instead of running again, and the turn ends', async ({
+    page,
+  }) => {
+    const sql = { sql: 'SELECT 42 AS answer' };
+    await boot(page, {
+      attention: 'first',
+      replies: [
+        `Querying.\n\n${call('RunSQL', sql)}`,
+        call('RunSQL', sql),
+        'The answer is 42.',
+      ],
+    });
+    await seedInput(page, 'empty.csv', 'a\n1\n');
+    await send(page, 'What is the answer?');
+
+    await expect(lastAssistant(page)).toContainText('The answer is 42.', { timeout: 30_000 });
+    await expect(card(page)).toHaveCount(0);
+    await expect(lastAssistant(page)).not.toContainText('Reached max tool iterations');
+    // Run once (a read: inline read-only SQL), then answered with the note.
+    expect(await toolLog(page)).toEqual(['RunSQL:read', 'RunSQL:repeated']);
+    const runs = lastAssistant(page).locator('.chat-tool-call', { hasText: 'RunSQL' });
+    await expect(runs).toHaveCount(2);
+    await runs.nth(1).locator('.chat-tool-summary').click();
+    await expect(runs.nth(1)).toContainText('You already ran RunSQL with these exact arguments');
+    await expect(runs.nth(1).locator('.chat-ring-badge')).toHaveText('ring 3');
+  });
+
   test('a CSV spelling kernel frames and ChatML: spoof warning, no forged call, the effect waits', { tag: '@slow' }, async ({
     page,
   }) => {

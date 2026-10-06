@@ -4,6 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AGENT_TOOLS, CALL_SKILL_NAMES } from '../agentTools';
+import { LLM_SAMPLE_ROWS } from '../duckdb';
+import sharedSqlSkillMd from '../../prompts/skills/SqlSkill.md?raw';
+import zeosSqlSkillMd from '../../prompts/zeos/SqlSkill.md?raw';
 import {
   READ_ONLY_SQL_PATTERN,
   SQL_WRITE_KEYWORDS,
@@ -366,6 +369,26 @@ describe('zeosAgentTools', () => {
       path: 'string',
       register_as: 'string',
     });
+  });
+
+  it('describes RunSQL for inline sql throughout, with no path workflow left in it', () => {
+    const runSql = zeosAgentTools(AGENT_TOOLS).find((t) => t.name === 'RunSQL')!;
+    const props = (runSql.parameters as { properties: Record<string, { description: string }> }).properties;
+    const text = [runSql.description, ...Object.values(props).map((p) => p.description)].join('\n');
+    expect(runSql.description).toContain('inline as `sql`');
+    expect(runSql.description).toContain(`at most the first ${LLM_SAMPLE_ROWS} rows`);
+    // The shared spec's path workflow: loaded from a file, written with
+    // WriteLines first, `path` in the result, three sample rows.
+    expect(text).not.toMatch(/loaded from a|WriteLines|path: string|first 3|3 rows/);
+    expect(props.path.description).toMatch(/needs approval/);
+  });
+
+  it('says how many sample rows RunSQL returns as the code does, in every SQL card and spec', () => {
+    const shared = AGENT_TOOLS.find((t) => t.name === 'RunSQL')!;
+    for (const text of [shared.description, sharedSqlSkillMd, zeosSqlSkillMd]) {
+      expect(text).toContain(`at most the first ${LLM_SAMPLE_ROWS} rows`);
+      expect(text).not.toMatch(/\b3 (sample )?rows/);
+    }
   });
 
   it('covers every agent tool in the class table', () => {

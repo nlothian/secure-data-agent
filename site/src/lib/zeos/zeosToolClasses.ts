@@ -37,6 +37,7 @@
  * disagree.
  */
 import { CALL_SKILL_NAMES, type AgentToolSpec } from '../agentTools';
+import { LAST_SQL_RESULT_NAME, LLM_SAMPLE_ROWS } from '../duckdb';
 
 export type ToolClass = 'read' | 'effect';
 
@@ -310,17 +311,39 @@ export function isTrustedToolResult(
 /** Tools this model does not get in v1. */
 export const ZEOS_DISABLED_TOOLS: ReadonlySet<string> = new Set(['RunSubAgent']);
 
-const RUN_SQL_ZEOS_NOTE =
-  'With this model, pass the query inline as `sql` (one statement). A ' +
-  'read-only query (SELECT, WITH, DESCRIBE, SHOW, EXPLAIN, SUMMARIZE, a ' +
-  'reporting PRAGMA) given only as `sql` runs straight away; anything else, ' +
-  'or a query given by `path` or with `register_as`, or one that reads a file ' +
-  'or URL itself (read_csv, FROM \'x.csv\'), waits for the user to approve it ' +
-  'once you have read tool output. Query the loaded tables by name. ';
+/**
+ * RunSQL as this model sees it: the query inline as `sql`. It replaces the
+ * shared description (and the `path` parameter's) rather than prefixing it,
+ * since the shared text describes the WriteLines + RunSQL(path) workflow and
+ * would contradict it.
+ */
+export const RUN_SQL_ZEOS_DESCRIPTION =
+  'Execute one SQL statement in DuckDB-WASM. Pass the query inline as `sql`; ' +
+  'do not write a .sql file. A read-only query (SELECT, WITH, DESCRIBE, SHOW, ' +
+  'EXPLAIN, SUMMARIZE, a reporting PRAGMA) given only as `sql` runs straight ' +
+  'away; anything else, or a query given by `path` or with `register_as`, or ' +
+  "one that reads a file or URL itself (read_csv, FROM 'x.csv'), waits for the " +
+  'user to approve it once you have read tool output. Query the loaded tables ' +
+  'by name. On success returns { columns: [{name, type}], sample_rows: ' +
+  'unknown[][], total_rows: number, registered_as: string }. ' +
+  `\`sample_rows\` holds at most the first ${LLM_SAMPLE_ROWS} rows and ` +
+  '`total_rows` the full count; when `sample_rows` holds all `total_rows` ' +
+  'rows you have the whole result, so answer from it. Long string cells in ' +
+  '`sample_rows` are truncated. On failure returns { error: string }: fix the ' +
+  'query and call RunSQL again. The full result is published to the input ' +
+  `registry as \`registered_as\` ("${LAST_SQL_RESULT_NAME}", overwritten by ` +
+  'each call), for RunPython to read from `arrow_inputs`. Use SQL ' +
+  'aggregations / WHERE / LIMIT for anything that needs more rows than ' +
+  '`sample_rows`.';
+
+const RUN_SQL_ZEOS_PATH =
+  'Instead of `sql`: a .sql file under /scratchpad or /input. It always ' +
+  'needs approval once you have read tool output, so prefer `sql`.';
 
 /**
  * The agent's tool specs as this model sees them: RunSubAgent removed, and
- * RunSQL taking its query inline as `sql` (so the machine can classify it).
+ * RunSQL taking its query inline as `sql` (so the machine can classify it),
+ * with a description that says so throughout (`RUN_SQL_ZEOS_DESCRIPTION`).
  */
 export function zeosAgentTools(tools: readonly AgentToolSpec[]): AgentToolSpec[] {
   return tools
@@ -328,20 +351,22 @@ export function zeosAgentTools(tools: readonly AgentToolSpec[]): AgentToolSpec[]
     .map((t) => {
       if (t.name !== 'RunSQL') return t;
       const params = t.parameters as {
-        properties?: Record<string, unknown>;
+        properties?: Record<string, Record<string, unknown>>;
         required?: string[];
       };
+      const props = params.properties ?? {};
       return {
         ...t,
-        description: RUN_SQL_ZEOS_NOTE + t.description,
+        description: RUN_SQL_ZEOS_DESCRIPTION,
         parameters: {
           ...t.parameters,
           properties: {
             sql: {
               type: 'string',
-              description: 'The SQL to run (DuckDB dialect). Use this instead of `path`.',
+              description: 'The SQL to run (DuckDB dialect), one statement.',
             },
-            ...params.properties,
+            ...props,
+            ...(props.path ? { path: { ...props.path, description: RUN_SQL_ZEOS_PATH } } : {}),
           },
           required: [],
         },
