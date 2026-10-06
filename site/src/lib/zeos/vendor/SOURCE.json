@@ -1,8 +1,8 @@
 {
-  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split",
-  "remote": "https://github.com/nlothian/zeos-webgpu-experiments.git",
-  "branch": "feat/zeos-integrate-split",
-  "commit": "15068e018d1f3fb58a38261ec6712c0603b6fa8f",
+  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main",
+  "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
+  "branch": "webgpu-main",
+  "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
   "dirty": false,
   "files": {
     "frames.js": "633ba7c653e4e80ff9b4a963a936cd72193ed2f2ea89ea7d830ed414f76dea3f",

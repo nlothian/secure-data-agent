@@ -183,8 +183,9 @@ the same in production).
 
 ## ZEOS kernel (browser)
 
-ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
-314 worker, separate from the app's Pyodide 0.29 RunPython worker.
+ZEOS (`nlothian/zeos-webgpu-experiments`, a fork of `metacognitionai/zeos`)
+runs in its own Pyodide 314 worker, separate from the app's Pyodide 0.29
+RunPython worker.
 
 - `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds three
   wheels with `uv`: `zeos` (the kernel), `zeos-browser` (from
@@ -202,17 +203,19 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
   `emfs:`). Pyodide itself loads from jsDelivr at a pinned version without
   SRI (`loadPyodide` fetches its own files); its packages are checked
   against Pyodide's lock file.
-- Sync from the ZEOS checkout whose commit the site should run. The site
-  runs the local branch `feat/zeos-integrate-split` (the integrated branch,
-  `feat/zeos-integrate`: OPT chat, masked tool choice, exact trusted results,
-  spoof-anywhere, rebased onto the package split; it is stacked on
-  `refactor/zeos-browser-split` and `feat/hf-model-cache`). It is local
-  only, nothing is pushed, and it lives in the worktree
-  `/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split`, so run
-  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split npm run zeos:sync`.
-  The main checkout
-  (`/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`) may
-  hold someone else's uncommitted edits, which the sync would build in (it
+- Sync from the ZEOS checkout whose commit the site should run: `main` of
+  the fork `nlothian/zeos-webgpu-experiments` (the package split, the
+  Hugging Face model cache, and the integrated chat work: OPT chat, masked
+  tool choice, exact trusted results, spoof-anywhere). Its checkout is the
+  worktree `/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main`,
+  local branch `webgpu-main` tracking `origin/main`; `git pull` there, then
+  run
+  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main npm run zeos:sync`.
+  Its `packages/zeos-browser/{models,node_modules}` are gitignored symlinks
+  into `zeos-task2-transformers`. Don't sync from the main checkout
+  (`/Users/nlothian/dev/github/metacognitionai/zeos`): its `main` tracks
+  upstream `metacognitionai/zeos`, which has none of this, and it may hold
+  someone else's uncommitted edits, which the sync would build in (it
   records `dirty: true`).
 - The same script vendors ZEOS's JS from `packages/zeos-browser/web`
   (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
@@ -261,7 +264,7 @@ one run holds the main chat.
   mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
   zeosq4b`, which hard-links them from
   `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
-  defaults to the zeos-integrate-split worktree here). After
+  defaults to the zeos-webgpu-main worktree). After
   rebuilding the export, run `npm run models:manifest-local --
   metacognitionai/Qwen3.5-4B-ZEOS-OPT`, which rewrites its `modelFiles.json`
   entry from `meta.json`.

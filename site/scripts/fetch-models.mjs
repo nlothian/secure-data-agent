@@ -47,7 +47,7 @@ const ALIASES = {
  * hard-linked (or copied, across filesystems) from there.
  */
 const ZEOS_REPO = path.resolve(
-  process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split',
+  process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main',
 );
 const LOCAL_SOURCES = {
   'metacognitionai/Qwen3.5-4B-ZEOS-OPT': path.join(
