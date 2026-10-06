@@ -198,8 +198,10 @@ RunPython worker.
   `public/zeos/cases/` holds only those) with a `manifest.json` (wheel paths
   and sha256, cases, and the ZEOS remote, branch, commit and `dirty`; no
   local paths, since it is served). `ZEOS_REPO` is required; there is no
-  default checkout. `public/zeos/` is **generated and gitignored**; re-run the
-  sync after changing ZEOS. The kernel worker checks each wheel's sha256
+  default checkout. `public/zeos/` is **generated and committed** (production
+  serves it: Pages builds from git, so a gitignored copy never deploys, and
+  `npm run build` fails if the manifest or a wheel it lists is missing);
+  re-run the sync after changing ZEOS and commit the result. The kernel worker checks each wheel's sha256
   against the manifest before installing it (from Pyodide's FS, micropip
   `emfs:`). Pyodide itself loads from jsDelivr at a pinned version without
   SRI (`loadPyodide` fetches its own files); its packages are checked
@@ -231,8 +233,8 @@ RunPython worker.
   `kernel.attachModel`) starts it and the model thread on the page thread.
 - `e2e/zeosKernel.spec.ts` (in `npm run test:e2e`) boots it with the stub
   model thread and steps `coop-count-scripted`; it needs network for
-  jsDelivr. The ZEOS e2e specs fail, saying to run `npm run zeos:sync`, when
-  `public/zeos/` is missing (`e2e/helpers/zeosSync.ts`);
+  jsDelivr. The ZEOS e2e specs fail, saying to run `npm run zeos:sync`, if
+  `public/zeos/` is ever missing (`e2e/helpers/zeosSync.ts`);
   `GDA_E2E_SKIP_ZEOS=1` skips them on purpose. `GDA_E2E_PORT` moves the e2e
   dev server off 4321 (to run two worktrees' suites side by side); a server
   already on that port is never reused, since it may be another worktree's.

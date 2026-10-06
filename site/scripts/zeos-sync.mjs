@@ -24,7 +24,7 @@
  *    `src/lib/zeos/vendor/SOURCE.json` (committed, not served) also records
  *    the checkout path that was synced.
  *
- * `public/zeos/` is generated and gitignored; `src/lib/zeos/vendor/` is
+ * `public/zeos/` and `src/lib/zeos/vendor/` are both generated and
  * committed (see CLAUDE.md).
  */
 import { execFileSync } from 'node:child_process';

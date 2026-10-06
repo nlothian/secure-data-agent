@@ -1,0 +1,59 @@
+{
+  "zeos": {
+    "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
+    "branch": "main",
+    "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
+    "dirty": false
+  },
+  "wheels": [
+    {
+      "name": "zeos-0.1.0-py3-none-any.whl",
+      "path": "wheels/4c49e8e37831/zeos-0.1.0-py3-none-any.whl",
+      "sha256": "4c49e8e37831078a9a61c7b4827f3fed947173cecc8979e81af0778c9e2afd0a",
+      "bytes": 325741
+    },
+    {
+      "name": "zeos_browser-0.1.0-py3-none-any.whl",
+      "path": "wheels/a1ef2880beaa/zeos_browser-0.1.0-py3-none-any.whl",
+      "sha256": "a1ef2880beaa0649512a8a5ae06f37712d2d09d2d15f39f807e0908b07045164",
+      "bytes": 59820
+    },
+    {
+      "name": "zeos_chat-0.1.0-py3-none-any.whl",
+      "path": "wheels/2fe9998c97e5/zeos_chat-0.1.0-py3-none-any.whl",
+      "sha256": "2fe9998c97e55114f9699e279379e92447d8e4b7c5585842117be0c7db6f11fe",
+      "bytes": 41579
+    }
+  ],
+  "cases": {
+    "coop-count-pipe": [
+      "events.jsonl",
+      "goals/counter-a.md",
+      "goals/counter-b.md",
+      "handlers/reset-count.md",
+      "system/boot.yaml",
+      "system/pipes.yaml",
+      "system/vectors.yaml",
+      "system/world-state.yaml"
+    ],
+    "coop-count-scripted": [
+      "events.jsonl",
+      "goals/counter-a.md",
+      "goals/counter-b.md",
+      "handlers/reset-count.md",
+      "system/boot.yaml",
+      "system/pipes.yaml",
+      "system/vectors.yaml",
+      "system/world-state.yaml"
+    ],
+    "coop-count-vector": [
+      "goals/counter-a.md",
+      "goals/counter-b.md",
+      "handlers/reset-count.md",
+      "system/boot.yaml",
+      "system/pipes.yaml",
+      "system/vectors.yaml",
+      "system/world-state.yaml"
+    ]
+  }
+}
