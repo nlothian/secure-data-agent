@@ -88,6 +88,14 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
     return { promise, resolve, reject };
   }
 
+  // Wait for a condition, one macrotask at a time. Every fake query settles
+  // on its own macrotask, so a check that becomes true when a query is issued
+  // is seen before that query settles: no fixed delay, however busy the
+  // event loop is.
+  async function until(cond: () => boolean): Promise<void> {
+    while (!cond()) await new Promise((r) => setTimeout(r, 0));
+  }
+  // Only for asserting that something does not happen.
   const tick = () => new Promise((r) => setTimeout(r, 5));
   const reads = (log: string[]) => log.filter((q) => q.startsWith('SELECT current_setting')).length;
   const restores = (log: string[]) => log.filter((q) => q.endsWith('= true')).length;
@@ -103,6 +111,7 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
     const { guard, settings, log } = await setup();
     const seen: Record<string, boolean[]> = { a: [], b: [] };
     const gates = { a: deferred(), b: deferred() };
+    const done = { a: false, b: false };
     const run = (k: 'a' | 'b') => {
       const p = guard.guarded(async () => {
         seen[k].push(settings.autoload, settings.autoinstall);
@@ -111,16 +120,16 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
         if (failing === k) throw new Error(`${k} failed`);
         return k;
       });
-      p.catch(() => {}); // settled below with allSettled
+      p.catch(() => {}).finally(() => (done[k] = true)); // settled below with allSettled
       return p;
     };
     const a = run('a');
-    await tick();
+    await until(() => seen.a.length === 2);
     const b = run('b');
-    await tick();
+    await until(() => seen.b.length === 2);
     const [first, second] = finishFirst === 'a' ? (['a', 'b'] as const) : (['b', 'a'] as const);
     gates[first].resolve();
-    await tick();
+    await until(() => done[first]);
     // The first is done; the other still runs with both settings off.
     expect(settings).toEqual({ autoload: false, autoinstall: false });
     expect(restores(log)).toBe(0);
@@ -181,7 +190,7 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
       await g1.promise;
       events.push('guard1 out');
     });
-    await tick();
+    await until(() => events.length === 1);
     // An approved query arrives while the guard runs: it waits, and so does
     // a guard that arrives after it.
     const b = guard.outside(async () => {
@@ -195,7 +204,7 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
     await tick();
     expect(events).toEqual(['guard1 in']);
     g1.resolve();
-    await tick();
+    await until(() => events.length === 3);
     expect(events).toEqual(['guard1 in', 'guard1 out', 'outside in autoload=true']);
     // SQL in the outside section turns autoloading on; the next guard turns it off again.
     settings.autoload = true;
@@ -214,12 +223,17 @@ describe('createExtensionAutoloadGuard — overlapping sections', () => {
   it('lets a guard that arrives while the last one restores wait for the restore', async () => {
     const { guard, settings, log } = await setup();
     const g1 = deferred();
-    const a = guard.guarded(() => g1.promise);
-    await tick();
+    let entered = false;
+    const a = guard.guarded(() => {
+      entered = true;
+      return g1.promise;
+    });
+    await until(() => entered);
     g1.resolve();
-    // Let the first guard reach its restore, then arrive.
-    await new Promise((r) => setTimeout(r, 0));
-    await Promise.resolve();
+    // Arrive once the first guard has issued its restore's first query, which
+    // has not settled yet.
+    await until(() => restores(log) === 1);
+    expect(log.at(-1)).toBe('SET autoload_known_extensions = true');
     const seen: boolean[] = [];
     const b = guard.guarded(async () => {
       seen.push(settings.autoload, settings.autoinstall);
