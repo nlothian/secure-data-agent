@@ -119,6 +119,10 @@ export type ReadSqlGuard = <T>(fn: () => Promise<T>) => Promise<T>;
 const guardWithDuckDb: ReadSqlGuard = async (fn) =>
   (await import('../duckdb')).withoutExtensionAutoload(fn);
 
+/** Run DuckDB work that must not overlap a guarded read (`outsideExtensionAutoloadGuard`). */
+const outsideGuardWithDuckDb: ReadSqlGuard = async (fn) =>
+  (await import('../duckdb')).outsideExtensionAutoloadGuard(fn);
+
 /**
  * How the kernel let a call run: from `tools.read` (no approval needed),
  * from `tools.effect` (the job was trusted enough to write it), or on the
@@ -133,8 +137,11 @@ export type ZeosCallHow = 'read' | 'effect' | 'approved';
  * `tools.read` with no approval) runs under `guardRead`, DuckDB with
  * extension autoloading off. That is keyed on what the kernel did, never on
  * classifying the SQL again here: where Python's `re` and `RegExp` disagree
- * (re-review finding N2), the kernel's verdict is the one that counted.
- * Anything else goes to `dispatch` unchanged.
+ * (re-review finding N2), the kernel's verdict is the one that counted. Any
+ * other RunSQL, and LoadData, runs under `outsideGuard`: never while a
+ * guarded read is running, so it neither runs with autoloading switched off
+ * under it nor changes the settings under a guarded query. Anything else
+ * goes to `dispatch` unchanged.
  */
 export async function dispatchForZeos(
   name: string,
@@ -142,8 +149,10 @@ export async function dispatchForZeos(
   how: ZeosCallHow,
   dispatch: (name: string, args: unknown) => Promise<unknown>,
   guardRead: ReadSqlGuard = guardWithDuckDb,
+  outsideGuard: ReadSqlGuard = outsideGuardWithDuckDb,
 ): Promise<unknown> {
   if (name === 'RunSQL' && how === 'read') return guardRead(() => dispatch(name, args));
+  if (name === 'RunSQL' || name === 'LoadData') return outsideGuard(() => dispatch(name, args));
   if (name !== 'CallSkill') return dispatch(name, args);
   if ((args as { skill?: unknown } | null)?.skill === 'sql') return spellOutCallSkill(zeosSqlSkillMd.trim());
   const result = await dispatch(name, args);

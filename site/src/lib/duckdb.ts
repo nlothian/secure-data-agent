@@ -255,31 +255,147 @@ export function getDuckDB(): Promise<DuckDBHandle> {
   return instancePromise;
 }
 
+/** The part of a DuckDB connection the autoload guard uses. */
+export interface AutoloadSettingsConn {
+  query(sql: string): Promise<{ get(index: number): { toJSON(): unknown } | null }>;
+}
+
+/** Runs `fn` in one of the guard's two modes. */
+export type DuckDbSection = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * The extension-autoload guard over one DuckDB connection, as two kinds of
+ * section that never overlap each other:
+ *
+ * - `guarded` (`withoutExtensionAutoload`): any number may overlap. The first
+ *   to enter saves `autoload_known_extensions` / `autoinstall_known_extensions`
+ *   and turns both off; the last to leave puts the saved values back. Every
+ *   guarded `fn` runs with both off, however the calls interleave (a new
+ *   turn's read-only RunSQL can start while a stopped turn's long query is
+ *   still running).
+ * - `outside` (`outsideExtensionAutoloadGuard`): any number may overlap, but
+ *   not with a guarded section. An approved RunSQL or LoadData runs here, so
+ *   it never runs with autoloading switched off under it, and SQL it runs
+ *   (`SET autoload_known_extensions = true`, say) cannot switch it back on
+ *   under a guarded query, nor be undone by a guard's restore.
+ *
+ * Sections are admitted in arrival order: one that has to wait holds back
+ * later arrivals of the other kind too, so neither starves. While the last
+ * guarded section restores the settings, new arrivals wait. DuckDB work
+ * outside both (the data panel, `restoreRegistryFromIndexedDB`, the queries
+ * a RunSQL makes to publish its result) is not ordered against them: it does
+ * not change these settings, so at worst it runs with autoloading off.
+ */
+export function createExtensionAutoloadGuard(getConn: () => Promise<AutoloadSettingsConn>): {
+  guarded: DuckDbSection;
+  outside: DuckDbSection;
+} {
+  type Mode = 'guarded' | 'outside';
+  let mode: Mode | null = null;
+  let active = 0;
+  let closing = false;
+  const waiting: { mode: Mode; admit: () => void }[] = [];
+  // The first guarded section's setup, shared by every guarded section that
+  // overlaps it; `saved` is set once the settings were read.
+  let setup: Promise<void> | null = null;
+  let saved: { autoload: boolean; autoinstall: boolean } | undefined;
+
+  const acquire = (m: Mode): Promise<void> => {
+    if (!closing && (mode === null || (mode === m && waiting.length === 0))) {
+      mode = m;
+      active += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => waiting.push({ mode: m, admit: () => { active += 1; resolve(); } }));
+  };
+  const release = (): void => {
+    active -= 1;
+    if (active > 0) return;
+    mode = waiting[0]?.mode ?? null;
+    while (waiting.length > 0 && waiting[0].mode === mode) waiting.shift()!.admit();
+  };
+
+  const disable = async (): Promise<void> => {
+    const conn = await getConn();
+    const before = (
+      await conn.query(
+        "SELECT current_setting('autoload_known_extensions')::BOOLEAN AS autoload, " +
+          "current_setting('autoinstall_known_extensions')::BOOLEAN AS autoinstall",
+      )
+    ).get(0)?.toJSON() as { autoload: boolean; autoinstall: boolean } | undefined;
+    saved = { autoload: before?.autoload !== false, autoinstall: before?.autoinstall !== false };
+    await conn.query('SET autoload_known_extensions = false');
+    await conn.query('SET autoinstall_known_extensions = false');
+  };
+  const restore = async (): Promise<void> => {
+    const values = saved;
+    saved = undefined;
+    if (!values) return;
+    const conn = await getConn();
+    await conn.query(`SET autoload_known_extensions = ${values.autoload}`);
+    await conn.query(`SET autoinstall_known_extensions = ${values.autoinstall}`);
+  };
+
+  async function guarded<T>(fn: () => Promise<T>): Promise<T> {
+    await acquire('guarded');
+    try {
+      setup ??= disable();
+      await setup;
+      return await fn();
+    } finally {
+      if (active === 1) {
+        // The last guarded section out: put the settings back before anyone
+        // else is admitted. If they cannot be restored, this throws.
+        closing = true;
+        setup = null;
+        try {
+          await restore();
+        } finally {
+          closing = false;
+          release();
+        }
+      } else {
+        release();
+      }
+    }
+  }
+
+  async function outside<T>(fn: () => Promise<T>): Promise<T> {
+    await acquire('outside');
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  return { guarded, outside };
+}
+
+const extensionAutoloadGuard = createExtensionAutoloadGuard(async () => (await getDuckDB()).conn);
+
 /**
  * Run `fn` (DuckDB queries) with extension autoloading and autoinstalling
  * off, then put both settings back. ZEOS Qwen 4B runs a read-only RunSQL with
  * no approval, so it must not fetch anything: an unknown function or file
  * type would otherwise make DuckDB download an extension. The read-only
  * classifier already refuses the known ways in (zeosToolClasses.ts); this is
- * the second layer. If the settings cannot be changed, it throws rather than
- * run the query unguarded.
+ * the second layer. Overlapping calls share one save and restore, and never
+ * overlap `outsideExtensionAutoloadGuard` (`createExtensionAutoloadGuard`).
+ * If the settings cannot be changed, it throws rather than run the query
+ * unguarded.
  */
-export async function withoutExtensionAutoload<T>(fn: () => Promise<T>): Promise<T> {
-  const { conn } = await getDuckDB();
-  const before = (
-    await conn.query(
-      "SELECT current_setting('autoload_known_extensions')::BOOLEAN AS autoload, " +
-        "current_setting('autoinstall_known_extensions')::BOOLEAN AS autoinstall",
-    )
-  ).get(0)?.toJSON() as { autoload: boolean; autoinstall: boolean } | undefined;
-  await conn.query('SET autoload_known_extensions = false');
-  await conn.query('SET autoinstall_known_extensions = false');
-  try {
-    return await fn();
-  } finally {
-    await conn.query(`SET autoload_known_extensions = ${before?.autoload === false ? 'false' : 'true'}`);
-    await conn.query(`SET autoinstall_known_extensions = ${before?.autoinstall === false ? 'false' : 'true'}`);
-  }
+export function withoutExtensionAutoload<T>(fn: () => Promise<T>): Promise<T> {
+  return extensionAutoloadGuard.guarded(fn);
+}
+
+/**
+ * Run `fn` (DuckDB work that may need or change the extension settings: an
+ * approved RunSQL, LoadData) when no `withoutExtensionAutoload` section is
+ * running, and keep new ones out until it finishes.
+ */
+export function outsideExtensionAutoloadGuard<T>(fn: () => Promise<T>): Promise<T> {
+  return extensionAutoloadGuard.outside(fn);
 }
 
 /**

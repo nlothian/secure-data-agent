@@ -138,4 +138,22 @@ describe('zeosPrompt', () => {
     await dispatchForZeos('ListInputs', {}, 'read', dispatch, guard);
     expect(guarded).toEqual([]);
   });
+
+  it('runs every other RunSQL, and LoadData, outside the guard', async () => {
+    const sections: string[] = [];
+    const section = (kind: string) => async <T,>(fn: () => Promise<T>): Promise<T> => {
+      sections.push(kind);
+      return fn();
+    };
+    const dispatch = async (name: string) => name;
+    const call = (name: string, args: unknown, how: 'read' | 'effect' | 'approved') =>
+      dispatchForZeos(name, args, how, dispatch, section('guarded'), section('outside'));
+    expect(await call('RunSQL', { sql: 'SELECT 1' }, 'read')).toBe('RunSQL');
+    expect(await call('RunSQL', { sql: 'SET autoload_known_extensions = true' }, 'approved')).toBe('RunSQL');
+    await call('RunSQL', { path: '/scratchpad/q.sql' }, 'effect');
+    expect(await call('LoadData', { url: 'https://x/y.parquet', table_name: 't' }, 'approved')).toBe('LoadData');
+    await call('ListInputs', {}, 'read');
+    await call('WriteLines', { path: '/scratchpad/a.txt', lines: [] }, 'approved');
+    expect(sections).toEqual(['guarded', 'outside', 'outside', 'outside']);
+  });
 });

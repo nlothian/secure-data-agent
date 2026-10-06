@@ -347,13 +347,22 @@ one run holds the main chat.
   quoted identifier followed (past whitespace and comments) by `(` is an
   effect, and so is one whose whole name is a write keyword or external
   word; `U&"…"` / `U&'…'` escapes (an `&` before a quote) are effects too.
-  Read-only queries query the tables LoadData loaded.
+  So is a quoted identifier holding `/`, `\`, `*`, `?` or `[` (DuckDB looks
+  for a file by that name; an alias like `"a/2"` is an effect as well), and
+  a dotted name whose next part after a `.` is a file extension or
+  compression suffix (`FROM data.csv`, `"data"."csv"`, `"sub/x".csv`,
+  `data.csv.gz`): DuckDB joins `catalog.schema.table` into a path and reads
+  that file. A column literally named `csv` reached as `t.csv` is therefore
+  an effect too. Read-only queries query the tables LoadData loaded.
   As a second layer `dispatchForZeos` runs every RunSQL the kernel put on
   `tools.read` (keyed on the `tool_call` sink, never on re-classifying the
   SQL in TypeScript) with DuckDB's `autoload_known_extensions` /
   `autoinstall_known_extensions` off (`withoutExtensionAutoload` in
-  `duckdb.ts`), then restores them. The vitest checks every case, and each
-  of the 36 write keywords (alone and under `EXPLAIN ANALYZE`), against the
+  `duckdb.ts`), then restores them. Overlapping guarded calls share one save
+  (by the first in) and one restore (by the last out), and any other RunSQL
+  or LoadData runs under `outsideExtensionAutoloadGuard`, which never
+  overlaps a guarded one (`createExtensionAutoloadGuard`). The vitest checks
+  every case, and each of the 36 write keywords (alone and under `EXPLAIN ANALYZE`), against the
   wheel's own `_rule_matches` under Python too (it imports the synced `.whl`
   files from `public/zeos`). Python's IGNORECASE without `re.ASCII` matches
   `ſ`, `K` (Kelvin), `İ` and `ı` against `[A-Za-z]` and `RegExp` does not,
