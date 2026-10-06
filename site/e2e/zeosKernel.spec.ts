@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { requireZeosSync } from './helpers/zeosSync';
 
 // Smoke test for the ZEOS plumbing: the page is cross-origin isolated, the
@@ -11,14 +11,11 @@ import { requireZeosSync } from './helpers/zeosSync';
 test.describe('ZEOS kernel worker', () => {
   requireZeosSync(test);
 
-  test('page is cross-origin isolated', async ({ page }) => {
-    await page.goto('/');
-    expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
-  });
-
   test('boots, attaches the stub model and steps coop-count-scripted', async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto('/');
+    // The page itself is cross-origin isolated (COOP/COEP), not just the worker.
+    expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
     const result = await page.evaluate(async () => {
       const h = await import(/* @vite-ignore */ '/src/lib/zeos/zeosHost.ts');
       const events: [string, unknown][] = [];

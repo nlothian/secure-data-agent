@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 // Covers the "New chat" button wiping OPFS /scratchpad. Seeds the directory
 // with a file, a nested directory, and a nested file, then drives onNewChat

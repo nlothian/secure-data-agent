@@ -1,5 +1,5 @@
 import { dispatchLoadData, resolveLocalUrl } from '../helpers/loadData';
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures';
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

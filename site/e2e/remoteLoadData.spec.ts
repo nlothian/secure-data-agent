@@ -1,9 +1,5 @@
-import { test, expect } from '@playwright/test';
-import {
-  dispatchLoadData,
-  runSqlDirect,
-  TITANIC_COLUMNS,
-} from './helpers/loadData';
+import { test, expect } from './fixtures';
+import { dispatchLoadData, TITANIC_COLUMNS } from './helpers/loadData';
 
 // End-to-end coverage for LoadData against a real remote URL — the Titanic
 // `train` CSV hosted on GitHub Gist (CORS-enabled via *.githubusercontent.com).
@@ -15,12 +11,14 @@ import {
 // This test stays pointed at the gist on purpose: it is the only end-to-end
 // exercise of LoadData against a third-party CORS-enabled host, including
 // the HTTP-error surface from a remote 404. Do not retarget it to the
-// same-origin copy.
+// same-origin copy. Querying a URL-loaded table is localTourData.spec.ts's job
+// (the same LoadData URL path, same-origin). Tagged @network, so
+// `npm run test:e2e:fast` leaves it out.
 
 const GIST_TITANIC_TRAIN_URL =
   'https://gist.githubusercontent.com/nlothian/65faed428e86c9724e83c4426d86c783/raw/7ecb4390910ee3400cc49dea0f8d1775fa53172b/train.csv';
 
-test.describe('LoadData remote URL — Titanic train CSV', () => {
+test.describe('LoadData remote URL — Titanic train CSV', { tag: '@network' }, () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     // Gates on the React island that owns the model menu — same hydration
@@ -42,38 +40,6 @@ test.describe('LoadData remote URL — Titanic train CSV', () => {
     });
     const colNames = (res.schema ?? []).map((c) => c.name);
     expect(colNames).toEqual(TITANIC_COLUMNS);
-  });
-
-  test('makes the loaded table queryable via DuckDB', async ({ page }) => {
-    const loaded = await dispatchLoadData(
-      page,
-      GIST_TITANIC_TRAIN_URL,
-      'titanic',
-    );
-    expect(loaded.error).toBeUndefined();
-
-    // Total-row sanity check.
-    const totalOutcome = (await runSqlDirect(
-      page,
-      'SELECT COUNT(*)::INTEGER AS n FROM titanic',
-    )) as { llm: { sample_rows: unknown[][]; total_rows: number } };
-    expect(totalOutcome.llm.total_rows).toBe(1);
-    expect(totalOutcome.llm.sample_rows[0]?.[0]).toBe(891);
-
-    // Aggregate that exercises an actual column from the CSV — the canonical
-    // Titanic survivor split is 549 / 342. DuckDB's CSV auto-inference picks
-    // VARCHAR for Survived in this file, so cast both sides to keep the
-    // assertion about data values rather than type-inference heuristics.
-    const survOutcome = (await runSqlDirect(
-      page,
-      'SELECT CAST(Survived AS INTEGER) AS s, COUNT(*)::INTEGER AS n ' +
-        'FROM titanic GROUP BY s ORDER BY s',
-    )) as { llm: { sample_rows: unknown[][]; total_rows: number } };
-    expect(survOutcome.llm.total_rows).toBe(2);
-    expect(survOutcome.llm.sample_rows).toEqual([
-      [0, 549],
-      [1, 342],
-    ]);
   });
 
   test('surfaces HTTP errors verbatim when the remote URL 404s', async ({

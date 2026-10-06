@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures';
 import { requireZeosSync } from './helpers/zeosSync';
 
 // ZEOS Qwen 4B's engine lifecycle on the scripted chat stub model thread (no
@@ -60,7 +60,7 @@ const modelButton = (page: Page) => page.locator('[data-tour-id="chat.modelDropd
 /** Wait for the engine to be up and expose the dev handle (`window.__zeosKernel`). */
 async function waitForKernel(page: Page) {
   await page.waitForFunction(() => (window as unknown as { __zeosKernel?: unknown }).__zeosKernel != null, null, {
-    timeout: 120_000,
+    timeout: 30_000,
   });
 }
 
@@ -70,7 +70,7 @@ const APPROVAL_REPLIES = [
   'Done with the note.',
 ];
 
-test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
+test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', { tag: '@slow' }, () => {
   requireZeosSync(test);
   test.setTimeout(240_000);
 
@@ -79,7 +79,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
   }) => {
     await boot(page, ['Hello from the stub.']);
     await send(page, 'hi');
-    await expect(lastAssistant(page)).toContainText('Hello from the stub.', { timeout: 120_000 });
+    await expect(lastAssistant(page)).toContainText('Hello from the stub.', { timeout: 30_000 });
     await expect(trust(page)).toHaveText('strict: trusted');
     await waitForKernel(page);
 
@@ -95,7 +95,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
 
     // A fresh engine replays the history; the new stub thread plays its script again.
     await send(page, 'hi again');
-    await expect(lastAssistant(page)).toContainText('Hello from the stub.', { timeout: 120_000 });
+    await expect(lastAssistant(page)).toContainText('Hello from the stub.', { timeout: 30_000 });
     await expect(trust(page)).toHaveText('strict: trusted');
     await expect(page.locator('.chat-msg-assistant')).toHaveCount(2);
   });
@@ -105,7 +105,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
   }) => {
     await boot(page, APPROVAL_REPLIES);
     await send(page, 'Save a note.');
-    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    await expect(card(page)).toBeVisible({ timeout: 30_000 });
     await waitForKernel(page);
 
     // While the turn streams (the card is part of it) the model cannot be switched.
@@ -137,7 +137,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
 
     // The next message runs on a fresh engine; the effect still waits for approval.
     await send(page, 'Try again.');
-    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    await expect(card(page)).toBeVisible({ timeout: 30_000 });
     await card(page).getByRole('button', { name: 'Deny' }).click();
     await expect(lastAssistant(page)).toContainText('Done with the note.', { timeout: 60_000 });
   });
@@ -145,7 +145,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
   test('Stop during an approval returns at once; disposeZeos terminates the workers', async ({ page }) => {
     await boot(page, APPROVAL_REPLIES);
     await send(page, 'Save a note.');
-    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    await expect(card(page)).toBeVisible({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Stop' }).click();
     await expect(card(page)).toHaveCount(0, { timeout: 5_000 });
     await expect(modelButton(page)).not.toHaveAttribute('data-switch-blocked', 'true', { timeout: 5_000 });
@@ -172,7 +172,7 @@ test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
 
     // Still on ZEOS in the config, so the next message starts it again.
     await send(page, 'Again.');
-    await expect(card(page)).toBeVisible({ timeout: 120_000 });
+    await expect(card(page)).toBeVisible({ timeout: 30_000 });
     await card(page).getByRole('button', { name: 'Deny' }).click();
     await expect(lastAssistant(page)).toContainText('Done with the note.', { timeout: 60_000 });
   });

@@ -263,16 +263,32 @@ function buildPersisted(s: ExecutionPanelSnapshot): PersistedPanelSnapshot {
   };
 }
 
+let lastPersist: Promise<void> = Promise.resolve();
+
+function persistNow(): void {
+  persistTimer = null;
+  const persisted = buildPersisted(snapshot);
+  lastPersist = savePanelSnapshot(persisted).catch((err) => {
+    console.warn('panelPersistence: save failed:', err);
+  });
+}
+
 function schedulePersist(): void {
   if (snapshot.restoring) return;
   if (persistTimer !== null) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    const persisted = buildPersisted(snapshot);
-    void savePanelSnapshot(persisted).catch((err) => {
-      console.warn('panelPersistence: save failed:', err);
-    });
-  }, PERSIST_DEBOUNCE_MS);
+  persistTimer = setTimeout(persistNow, PERSIST_DEBOUNCE_MS);
+}
+
+/**
+ * Test seam (e2e): run a pending debounced persist now and wait until the
+ * latest save has landed, instead of sleeping past PERSIST_DEBOUNCE_MS.
+ */
+export async function __flushPersistForTesting(): Promise<void> {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistNow();
+  }
+  await lastPersist;
 }
 
 function setSnapshot(next: ExecutionPanelSnapshot): void {

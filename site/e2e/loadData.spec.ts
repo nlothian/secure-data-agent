@@ -1,13 +1,16 @@
-import { test, expect } from '@playwright/test';
-import { dispatchLoadData, seedSandbox } from './helpers/loadData';
+import { test, expect } from './fixtures';
+import { dispatchLoadData, seedSandbox, warmDuckDB } from './helpers/loadData';
 
 // End-to-end coverage for the LoadData `/input/...` path fix. We seed an OPFS
 // directory with a small CSV, install it as the sandbox dir via the test seam
 // exported from sandboxStore, and exercise the full runAgentTool dispatch for
-// each path form. Releases the Step/Play gate via the toolDebugger so the
-// gated tool actually completes.
+// the `/input/...` form. Releases the Step/Play gate via the toolDebugger so
+// the gated tool actually completes. The other path forms (bare, `sandbox:`,
+// `file://`, `./`) are parseLoadDataInput's vitest cases in
+// src/lib/agentTools.test.ts, and dataErrorClear.spec.ts loads a bare path
+// through this same dispatch.
 //
-// Sandbox loads are fast (no network, no DuckDB cold-start on most runs), so
+// Sandbox loads are fast (no network, and beforeEach starts DuckDB first), so
 // we tighten the helper's default timeouts here — a regression that pushes
 // either phase past 5 s should fail loudly rather than silently soak up the
 // 30 s default.
@@ -22,11 +25,7 @@ test.describe('LoadData sandbox-path forms', () => {
     // wired up.
     await expect(page.getByText('Choose model')).toBeVisible();
     await seedSandbox(page);
-  });
-
-  test('accepts bare sandbox-relative paths', async ({ page }) => {
-    const res = await dispatchLoadData(page, 'mini.csv', 'bare', SANDBOX_TIMEOUTS);
-    expect(res).toMatchObject({ name: 'bare', rowCount: 2, source: 'sandbox' });
+    await warmDuckDB(page);
   });
 
   test('accepts the /input/... form used by ListFiles/ReadLines', async ({
@@ -44,15 +43,5 @@ test.describe('LoadData sandbox-path forms', () => {
       source: 'sandbox',
       sourcePath: 'mini.csv',
     });
-  });
-
-  test('still strips legacy `sandbox:` URI scheme', async ({ page }) => {
-    const res = await dispatchLoadData(
-      page,
-      'sandbox:mini.csv',
-      'sbScheme',
-      SANDBOX_TIMEOUTS,
-    );
-    expect(res).toMatchObject({ name: 'sbScheme', rowCount: 2, source: 'sandbox' });
   });
 });

@@ -209,18 +209,28 @@ export default function ChatSidebar() {
     let idleHandle: number | null = null;
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
+    // Dev/e2e: what the boot-time eager load decided, on
+    // `window.__gdaEagerLoad`, so a test can wait for the decision instead of
+    // sleeping.
+    const decide = (decision: 'no-model' | 'no-webgpu' | 'not-cached' | 'load', id: string): void => {
+      (window as unknown as { __gdaEagerLoad?: { id: string; decision: string } }).__gdaEagerLoad = { id, decision };
+    };
     void (async () => {
       const { resolveActiveLocalModelIdOrDefault, getLocalGemmaModel } =
         await import('../lib/localLlm/models');
       const id = resolveActiveLocalModelIdOrDefault(config);
       const model = getLocalGemmaModel(id);
-      if (cancelled || !model) return;
+      if (cancelled) return;
+      if (!model) return decide('no-model', id);
       const { detectWebGpu } = await import('../lib/localLlm/webgpu');
       const gpu = await detectWebGpu();
-      if (cancelled || !gpu.supported) return;
+      if (cancelled) return;
+      if (!gpu.supported) return decide('no-webgpu', id);
       const { isModelCached } = await import('../lib/localLlm/modelCache');
       const cached = await isModelCached(model);
-      if (cancelled || !cached) return;
+      if (cancelled) return;
+      if (!cached) return decide('not-cached', id);
+      decide('load', id);
       const run = (): void => {
         if (cancelled) return;
         if (model.family === 'zeos-qwen') {

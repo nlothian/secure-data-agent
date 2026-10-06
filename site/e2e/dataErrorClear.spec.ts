@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test';
-import { dispatchLoadData, seedSandbox } from './helpers/loadData';
+import { test, expect } from './fixtures';
+import { dispatchLoadData, seedSandbox, warmDuckDB } from './helpers/loadData';
 
 // Regression coverage for the "stuck Data-tab error" bug: a failed LoadData
 // left the error banner visible forever because no reset path touched it and
@@ -48,6 +48,7 @@ test.describe('Data-tab error is cleared by every reset path', () => {
     await page.goto('/');
     await expect(page.getByText('Choose model')).toBeVisible();
     await seedSandbox(page);
+    await warmDuckDB(page);
   });
 
   test('the Dismiss button clears a zero-table error', async ({ page }) => {
@@ -113,8 +114,12 @@ test.describe('Data-tab error is cleared by every reset path', () => {
   test('a page reload does not resurrect the error', async ({ page }) => {
     await forceDataError(page);
 
-    // Let the debounced panel persist (PERSIST_DEBOUNCE_MS = 500ms) flush.
-    await page.waitForTimeout(800);
+    // Flush the debounced panel persist (PERSIST_DEBOUNCE_MS = 500ms) so the
+    // reload sees what the app saved after the error.
+    await page.evaluate(async () => {
+      const store = await import('/src/lib/executionPanelStore.ts');
+      await store.__flushPersistForTesting();
+    });
     await page.reload();
     await expect(page.getByText('Choose model')).toBeVisible();
 
