@@ -1,8 +1,8 @@
-# Gemma Data Agent
+# Secure Data Agent
 
-An offline data and coding agent with built-in explainability, built for the [Kaggle Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/).
+An offline data and coding agent that runs local models (Gemma 4, Qwen 3.5 and ZEOS Qwen 4B) entirely in your browser, with built-in explainability and a ZEOS-kernel mode that gates effectful tools behind trust rings.
 
-You can try it yourself at the live [Gemma Data Agent](https://gemma-data-agent.nicklothian.com/) website. It starts with an optional guided tour which will take about 5 minutes and shows all the features. 
+It began as [Gemma Data Agent](https://github.com/nlothian/gemma-data-agent), built for the [Kaggle Gemma 4 Good Hackathon](https://www.kaggle.com/competitions/gemma-4-good-hackathon/). That version is live at [gemma-data-agent.nicklothian.com](https://gemma-data-agent.nicklothian.com/), with an optional guided tour of about 5 minutes that shows all the features.
 
 Chrome or Edge only for now: the model's largest weight tensor needs a single WebGPU buffer of about 1.5 GB, and Firefox caps `maxBufferSize` at 1 GiB.
 
@@ -52,4 +52,12 @@ Measured in Chrome on an Apple M1 Max, with the model files already in the OS ca
 - **Hiding a past span:** this replays from the nearest snapshot, which takes 2.4–2.7 s for 16 positions at 600 in a 1,052-token context.
 - **Graph benchmark (ZEOS-OPT vs -OPT):** prefill of 2,048 tokens from empty runs at 326 vs 270 tok/s. Decode at 64 positions takes 45 vs 40 ms, and at ~4.1k positions 56 vs 46 ms.
 
-Read the [complete Kaggle Write Up here](https://www.kaggle.com/competitions/gemma-4-good-hackathon/writeups/gemma-data-agent-litert-and-safety-and-trust).
+Read the [complete Kaggle Write Up of the original Gemma version here](https://www.kaggle.com/competitions/gemma-4-good-hackathon/writeups/gemma-data-agent-litert-and-safety-and-trust).
+
+## Build and Run
+
+```
+cd site
+npm install
+npm run dev
+```

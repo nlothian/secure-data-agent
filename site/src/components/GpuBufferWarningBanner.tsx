@@ -30,7 +30,7 @@ function formatGiB(bytes: number | undefined): string {
 
 /**
  * Full-width bar warning that the current browser's WebGPU buffer limit is
- * too small to run Gemma Data Agent. Renders nothing until WebGPU detection
+ * too small to run Secure Data Agent. Renders nothing until WebGPU detection
  * resolves, and nothing when the adapter reports a large enough buffer.
  */
 export default function GpuBufferWarningBanner(): JSX.Element | null {
@@ -95,7 +95,7 @@ export default function GpuBufferWarningBanner(): JSX.Element | null {
         ⚠
       </span>
       <span>
-        <strong>Gemma Data Agent won&rsquo;t run in this browser.</strong> Its
+        <strong>Secure Data Agent won&rsquo;t run in this browser.</strong> Its
         GPU buffer limit is {formatGiB(effectiveLimit)}; the model&rsquo;s
         largest weight tensor needs at least {REQUIRED_LABEL} in one buffer. Use
         Google Chrome or Edge.
