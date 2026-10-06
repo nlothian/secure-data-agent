@@ -27,7 +27,6 @@ test.describe('ModelSelector — predefined Gemma 4 ONNX models', () => {
   test('dropdown lists the four models with sizes and no custom picker', async ({ page }) => {
     // No model is preselected, so boot does not eager-load one (in
     // local-models mode every model counts as cached).
-    await page.addInitScript(() => localStorage.setItem('tour.seen', '1'));
     await page.goto('/');
     await expect(page.locator('.chat-model-split')).toBeVisible();
 

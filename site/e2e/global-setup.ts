@@ -14,7 +14,6 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    await page.addInitScript(() => localStorage.setItem('tour.seen', '1'));
     await page.goto(baseURL);
     await page.getByText('Choose model').waitFor({ state: 'visible', timeout: 120_000 });
   } finally {

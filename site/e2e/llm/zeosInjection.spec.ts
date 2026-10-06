@@ -84,7 +84,6 @@ async function boot(page: Page, attentionOnly: boolean): Promise<void> {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.addInitScript(
     ({ cfgKey, cfg }) => {
-      localStorage.setItem('tour.seen', '1');
       localStorage.removeItem('gda.zeos.stub');
       if (!sessionStorage.getItem('e2e.zeosInjection.seeded')) {
         localStorage.setItem(cfgKey, cfg);
