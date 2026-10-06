@@ -49,7 +49,7 @@ const ALIASES = {
  * different repo id from the one the site loads it by.
  */
 const ZEOS_REPO = path.resolve(
-  process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main',
+  process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos',
 );
 const LOCAL_SOURCES = {
   'metacognitionai/Qwen3.5-4B-ZEOS-OPT': path.join(

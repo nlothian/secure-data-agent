@@ -207,17 +207,13 @@ RunPython worker.
 - Sync from the ZEOS checkout whose commit the site should run: `main` of
   the fork `nlothian/zeos-webgpu-experiments` (the package split, the
   Hugging Face model cache, and the integrated chat work: OPT chat, masked
-  tool choice, exact trusted results, spoof-anywhere). Its checkout is the
-  worktree `/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main`,
-  local branch `webgpu-main` tracking `origin/main`; `git pull` there, then
-  run
-  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main npm run zeos:sync`.
-  Its `packages/zeos-browser/{models,node_modules}` are gitignored symlinks
-  into `zeos-task2-transformers`. Don't sync from the main checkout
-  (`/Users/nlothian/dev/github/metacognitionai/zeos`): its `main` tracks
-  upstream `metacognitionai/zeos`, which has none of this, and it may hold
-  someone else's uncommitted edits, which the sync would build in (it
-  records `dirty: true`).
+  tool choice, exact trusted results, spoof-anywhere). Its checkout is
+  `/Users/nlothian/dev/github/metacognitionai/zeos`, whose `main` tracks the
+  fork's `origin/main` (`upstream` is `metacognitionai/zeos`); `git pull`
+  there, then run
+  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos npm run zeos:sync`.
+  The sync records `dirty: true` if that checkout holds uncommitted edits
+  under `src`, `packages` or `demo`, which it would build in.
 - The same script vendors ZEOS's JS from `packages/zeos-browser/web`
   (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
   `transformers_worker.js`, and `model_cache.js`, `opfs_store.js`,
@@ -275,7 +271,7 @@ one run holds the main chat.
   no cache instead; for that, run `cd site && npm run models:fetch --
   zeosq4b`, which hard-links the files from
   `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
-  defaults to the zeos-webgpu-main worktree). After
+  defaults to that checkout). After
   rebuilding the export, run `npm run models:manifest-local --
   metacognitionai/Qwen3.5-4B-ZEOS-OPT`, which rewrites its `modelFiles.json`
   entry from `meta.json`.

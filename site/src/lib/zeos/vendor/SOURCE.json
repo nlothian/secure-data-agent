@@ -1,7 +1,7 @@
 {
-  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main",
+  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos",
   "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
-  "branch": "webgpu-main",
+  "branch": "main",
   "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
   "dirty": false,
   "files": {
