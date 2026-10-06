@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import useLLMConfig from '../hooks/useLLMConfig';
+import useLLMConfig, { isFirstVisitLLMConfig } from '../hooks/useLLMConfig';
 import useLocalGemmaSwitcher from '../hooks/useLocalGemmaSwitcher';
 import useModelSwitchBlocked from '../hooks/useModelSwitchBlocked';
 import {
+  canRunZeos,
+  currentZeosCapabilities,
   defaultLocalModelId,
   formatGB,
   getLocalGemmaModel,
@@ -16,13 +18,15 @@ import { ChevronDownIcon } from './Icons';
 export interface ModelSelectorProps {
   onModelMenuOpenChange?: (setter: (open: boolean) => void) => void;
   onRequestModelReady?: (fn: (id: string) => void) => void;
+  onConfirmDownloadReady?: (fn: (id: string) => Promise<boolean>) => void;
 }
 
 export default function ModelSelector({
   onModelMenuOpenChange,
   onRequestModelReady,
+  onConfirmDownloadReady,
 }: ModelSelectorProps) {
-  const { config, ready, setModel, setThinkingEnabled, setZeosAttentionOnly, setZeosMaskToolChoice } =
+  const { config, ready, setActiveEndpoint, setModel, setThinkingEnabled, setZeosAttentionOnly, setZeosMaskToolChoice } =
     useLLMConfig();
   const modelSwitcher = useLocalGemmaSwitcher({ loadOnApply: true });
   const switchBlocked = useModelSwitchBlocked();
@@ -35,20 +39,31 @@ export default function ModelSelector({
   // left in localStorage by the removed custom-model picker) to the default,
   // so the label, active-option highlight and the inference path all agree.
   // The default depends on WebGPU (`defaultLocalModelId`), so wait for that
-  // check first.
+  // check first. A first visit (no saved config at all) selects the local
+  // endpoint and the default model too, where one can run (WebGPU, or the
+  // ZEOS dev stub); nothing is downloaded until a send, which asks first
+  // (`confirmDownload`).
   const storedLocalId = config.models[LOCAL_GEMMA_ENDPOINT];
+  const firstVisit = isFirstVisitLLMConfig(config);
   useEffect(() => {
     if (!ready) return;
-    if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return;
-    if (isLocalGemmaId(storedLocalId)) return;
+    if (!firstVisit) {
+      if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return;
+      if (isLocalGemmaId(storedLocalId)) return;
+    }
     let cancelled = false;
-    void detectWebGpu().then(() => {
-      if (!cancelled) setModel(LOCAL_GEMMA_ENDPOINT, defaultLocalModelId());
+    void detectWebGpu().then((gpu) => {
+      if (cancelled) return;
+      if (firstVisit) {
+        if (!gpu.supported && !canRunZeos(currentZeosCapabilities())) return;
+        setActiveEndpoint(LOCAL_GEMMA_ENDPOINT);
+      }
+      setModel(LOCAL_GEMMA_ENDPOINT, defaultLocalModelId());
     });
     return () => {
       cancelled = true;
     };
-  }, [ready, config.activeEndpoint, storedLocalId, setModel]);
+  }, [ready, firstVisit, config.activeEndpoint, storedLocalId, setActiveEndpoint, setModel]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -94,6 +109,14 @@ export default function ModelSelector({
       ),
     );
   }, [onRequestModelReady, modelSwitcher.request]);
+
+  useEffect(() => {
+    onConfirmDownloadReady?.((id) =>
+      modelSwitcher.confirmDownload(
+        id as Parameters<typeof modelSwitcher.confirmDownload>[0],
+      ),
+    );
+  }, [onConfirmDownloadReady, modelSwitcher.confirmDownload]);
 
   const ep = config.activeEndpoint;
   const rawModel = ep ? config.models[ep] : '';
@@ -208,7 +231,7 @@ export default function ModelSelector({
                 className="chat-model-apply"
                 onClick={modelSwitcher.apply}
               >
-                Apply
+                {pendingConfirm.forSend ? 'Download' : 'Apply'}
               </button>
               <button
                 type="button"

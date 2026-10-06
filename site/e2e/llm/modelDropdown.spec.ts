@@ -26,7 +26,17 @@ async function readActiveModel(page: import('@playwright/test').Page): Promise<s
 test.describe('ModelSelector — predefined Gemma 4 ONNX models', () => {
   test('dropdown lists the four models with sizes and no custom picker', async ({ page }) => {
     // No model is preselected, so boot does not eager-load one (in
-    // local-models mode every model counts as cached).
+    // local-models mode every model counts as cached). A first visit (no
+    // saved config) would select the default, so save one with nothing
+    // selected.
+    await page.addInitScript((key) => {
+      if (localStorage.getItem(key) === null) {
+        localStorage.setItem(
+          key,
+          JSON.stringify({ activeEndpoint: null, customEndpoints: [], apiKeys: {}, models: {} }),
+        );
+      }
+    }, LLM_CONFIG_STORAGE_KEY);
     await page.goto('/');
     await expect(page.locator('.chat-model-split')).toBeVisible();
 

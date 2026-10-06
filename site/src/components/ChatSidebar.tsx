@@ -142,6 +142,15 @@ export default function ChatSidebar() {
   const handleRequestModelReady = useCallback((fn: (id: string) => void) => {
     requestModelRef.current = fn;
   }, []);
+  const confirmDownloadRef = useRef<(id: string) => Promise<boolean>>(async () => true);
+  const handleConfirmDownloadReady = useCallback(
+    (fn: (id: string) => Promise<boolean>) => {
+      confirmDownloadRef.current = fn;
+    },
+    [],
+  );
+  // A send waiting on the download-size dialog; further sends are ignored.
+  const confirmingDownloadRef = useRef(false);
   useEffect(
     () =>
       registerChatBridge({
@@ -397,6 +406,24 @@ export default function ChatSidebar() {
       const trimmed = userText.trim();
       if (!trimmed || isStreaming) return;
       if (unconfigured) return;
+      if (confirmingDownloadRef.current) return;
+      // A local model that is not cached (a first visit selects one by
+      // itself) is downloaded only after the size dialog: decline keeps the
+      // text in the composer and sends nothing.
+      if (config.activeEndpoint === LOCAL_GEMMA_ENDPOINT) {
+        const { resolveActiveLocalModelIdOrDefault } = await import('../lib/localLlm/models');
+        confirmingDownloadRef.current = true;
+        let ok: boolean;
+        try {
+          ok = await confirmDownloadRef.current(resolveActiveLocalModelIdOrDefault(config));
+        } finally {
+          confirmingDownloadRef.current = false;
+        }
+        if (!ok) {
+          setInput((cur) => (cur.trim() ? cur : userText));
+          return;
+        }
+      }
       // If a hydration is in flight (page reload), wait for it before
       // letting the agent see the registry — otherwise its first ListInputs
       // / RunSQL would race the rehydrate.
@@ -742,6 +769,7 @@ export default function ChatSidebar() {
             <ModelSelector
               onModelMenuOpenChange={handleModelMenuSetterReady}
               onRequestModelReady={handleRequestModelReady}
+              onConfirmDownloadReady={handleConfirmDownloadReady}
             />
           </div>
           <div className="chat-header-actions">

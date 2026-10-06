@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import useLLMConfig from './useLLMConfig';
 import { LOCAL_GEMMA_ENDPOINT } from '../types/llm';
 import {
@@ -7,13 +7,18 @@ import {
   type LocalGemmaModel,
 } from '../lib/localLlm/models';
 import { isModelCached, uncachedBytes } from '../lib/localLlm/modelCache';
+import { hasDownloadConsent, noteDownloadConsent } from '../lib/localLlm/downloadConsent';
 import { modelSwitchBlockedReason, releaseUnusedEngines } from '../lib/localLlm/engineLifecycle';
 
 export type SwitcherState =
   | { phase: 'idle' }
   | { phase: 'checking'; modelId: LocalGemmaId }
-  /** `bytes`: what is still to download (a resumed download counts what it holds). */
-  | { phase: 'confirm'; model: LocalGemmaModel; bytes: number };
+  /**
+   * `bytes`: what is still to download (a resumed download counts what it
+   * holds). `forSend`: asked by `confirmDownload` for the active model before
+   * a send, rather than by a switch.
+   */
+  | { phase: 'confirm'; model: LocalGemmaModel; bytes: number; forSend?: boolean };
 
 export interface UseLocalGemmaSwitcherOptions {
   // When true, apply() also triggers ensureLoaded(modelId) so the download
@@ -28,6 +33,12 @@ export interface UseLocalGemmaSwitcherResult {
   request: (modelId: LocalGemmaId) => void;
   apply: () => void;
   cancel: () => void;
+  /**
+   * Before a send with `modelId` active: resolves true at once when the model
+   * is cached or its download was already agreed to in this page load,
+   * otherwise shows the size dialog and resolves with the user's answer.
+   */
+  confirmDownload: (modelId: LocalGemmaId) => Promise<boolean>;
 }
 
 export default function useLocalGemmaSwitcher(
@@ -35,9 +46,17 @@ export default function useLocalGemmaSwitcher(
 ): UseLocalGemmaSwitcherResult {
   const { config, setActiveEndpoint, setModel } = useLLMConfig();
   const [state, setState] = useState<SwitcherState>({ phase: 'idle' });
+  // The pending `confirmDownload` promise's resolver, while its dialog shows.
+  const sendAnswerRef = useRef<((ok: boolean) => void) | null>(null);
+  const answerSend = useCallback((ok: boolean): void => {
+    const resolve = sendAnswerRef.current;
+    sendAnswerRef.current = null;
+    resolve?.(ok);
+  }, []);
 
   const commit = useCallback(
     (modelId: LocalGemmaId): void => {
+      noteDownloadConsent(modelId);
       setActiveEndpoint(LOCAL_GEMMA_ENDPOINT);
       setModel(LOCAL_GEMMA_ENDPOINT, modelId);
       const model = getLocalGemmaModel(modelId) ?? null;
@@ -83,6 +102,8 @@ export default function useLocalGemmaSwitcher(
         setState({ phase: 'idle' });
         return;
       }
+      // A switch replaces a send's dialog: that send is declined.
+      answerSend(false);
       setState({ phase: 'checking', modelId });
       void (async () => {
         try {
@@ -100,20 +121,52 @@ export default function useLocalGemmaSwitcher(
         }
       })();
     },
-    [commit, config.activeEndpoint, config.models],
+    [answerSend, commit, config.activeEndpoint, config.models],
   );
 
   const apply = useCallback((): void => {
     if (state.phase !== 'confirm') return;
+    if (state.forSend) {
+      // The model is already the active one; the send loads it.
+      noteDownloadConsent(state.model.id);
+      setState({ phase: 'idle' });
+      answerSend(true);
+      return;
+    }
     if (modelSwitchBlockedReason()) return;
     const modelId = state.model.id;
     setState({ phase: 'idle' });
     commit(modelId);
-  }, [commit, state]);
+  }, [answerSend, commit, state]);
 
   const cancel = useCallback((): void => {
     setState({ phase: 'idle' });
-  }, []);
+    answerSend(false);
+  }, [answerSend]);
 
-  return { state, request, apply, cancel };
+  const confirmDownload = useCallback(
+    async (modelId: LocalGemmaId): Promise<boolean> => {
+      if (hasDownloadConsent(modelId)) return true;
+      const model = getLocalGemmaModel(modelId);
+      if (!model) return true;
+      let bytes = model.approxBytes;
+      try {
+        if (await isModelCached(model)) {
+          noteDownloadConsent(modelId);
+          return true;
+        }
+        bytes = await uncachedBytes(model);
+      } catch {
+        // Ask with the approximate size.
+      }
+      answerSend(false);
+      return new Promise<boolean>((resolve) => {
+        sendAnswerRef.current = resolve;
+        setState({ phase: 'confirm', model, bytes, forSend: true });
+      });
+    },
+    [answerSend],
+  );
+
+  return { state, request, apply, cancel, confirmDownload };
 }

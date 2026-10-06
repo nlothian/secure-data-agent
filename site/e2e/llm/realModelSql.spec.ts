@@ -123,13 +123,17 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
 
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByText('Choose model')).toBeVisible();
+    await expect(page.locator('.chat-model-split')).toBeVisible();
 
-    // Belt-and-suspenders state reset: drop any persisted LLM config and
-    // clear loaded tables / chat history via the same New-chat path the app
-    // uses.
+    // Belt-and-suspenders state reset: save an LLM config with nothing
+    // selected (a missing one is a first visit, which selects the default
+    // model by itself and, in local-models mode, eager-loads it) and clear
+    // loaded tables / chat history via the same New-chat path the app uses.
     await page.evaluate(async (key) => {
-      localStorage.removeItem(key);
+      localStorage.setItem(
+        key,
+        JSON.stringify({ activeEndpoint: null, customEndpoints: [], apiKeys: {}, models: {} }),
+      );
       const bridge = await import('/src/lib/tour/bridge.ts');
       bridge.getChatBridge().newChat();
     }, LLM_CONFIG_STORAGE_KEY);
