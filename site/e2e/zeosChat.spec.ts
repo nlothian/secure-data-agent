@@ -45,7 +45,6 @@ async function boot(
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.addInitScript(
     ({ cfgKey, cfg, stubKey, stub }) => {
-      localStorage.setItem('tour.seen', '1');
       if (!sessionStorage.getItem('e2e.zeosChat.seeded')) {
         localStorage.setItem(cfgKey, cfg);
         localStorage.setItem(stubKey, stub);

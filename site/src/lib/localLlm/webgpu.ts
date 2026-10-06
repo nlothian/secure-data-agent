@@ -32,6 +32,11 @@ export function isWebGpuApiPresent(): boolean {
   return typeof (navigator as unknown as { gpu?: unknown }).gpu !== 'undefined';
 }
 
+/** `detectWebGpu()`'s result once it has finished, else null. */
+export function getCachedWebGpuStatus(): WebGpuStatus | null {
+  return cached;
+}
+
 export async function detectWebGpu(): Promise<WebGpuStatus> {
   if (cached) return cached;
   if (inflight) return inflight;

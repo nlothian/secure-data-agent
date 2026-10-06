@@ -41,10 +41,6 @@ async function expectDataErrorCleared(page: import('@playwright/test').Page) {
 
 test.describe('Data-tab error is cleared by every reset path', () => {
   test.beforeEach(async ({ page }) => {
-    // Suppress the first-visit onboarding tour: its "Tour step" dialog
-    // overlays the data panel and intercepts the Clear all / Dismiss clicks.
-    // addInitScript re-runs on the reload test too, so the flag survives.
-    await page.addInitScript(() => localStorage.setItem('tour.seen', '1'));
     await page.goto('/');
     await expect(page.getByText('Choose model')).toBeVisible();
     await seedSandbox(page);

@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
 import {
-  DEFAULT_LOCAL_GEMMA_ID,
+  canRunZeos,
+  defaultLocalModelId,
+  FALLBACK_LOCAL_GEMMA_ID,
   LOCAL_GEMMA_MODELS,
+  PREFERRED_LOCAL_GEMMA_ID,
   transformersModelIdFor,
   formatGB,
   getLocalGemmaModel,
   isLocalGemmaId,
   resolveActiveLocalModelIdOrDefault,
+  type ZeosCapabilities,
 } from './models';
 import { hasManifest, totalBytes } from './modelFiles';
 
@@ -61,8 +65,10 @@ describe('LOCAL_GEMMA_MODELS', () => {
     expect(transformersModelIdFor('gemma-4-e2b')).toBe('gemma-4-e2b');
   });
 
-  it('defaults to a predefined model', () => {
-    expect(isLocalGemmaId(DEFAULT_LOCAL_GEMMA_ID)).toBe(true);
+  it('defaults to predefined models: ZEOS Qwen 4B, else Gemma 4 E2B', () => {
+    expect(PREFERRED_LOCAL_GEMMA_ID).toBe('zeos-qwen3.5-4b');
+    expect(FALLBACK_LOCAL_GEMMA_ID).toBe('gemma-4-e2b');
+    expect(getLocalGemmaModel(PREFERRED_LOCAL_GEMMA_ID)?.family).toBe('zeos-qwen');
   });
 
   it.each(
@@ -80,18 +86,63 @@ describe('LOCAL_GEMMA_MODELS', () => {
   );
 });
 
+const CAPABLE: ZeosCapabilities = {
+  crossOriginIsolated: true,
+  webGpu: { supported: true, f16: true },
+  stub: false,
+};
+
+describe('canRunZeos / defaultLocalModelId', () => {
+  it('picks ZEOS Qwen 4B on an isolated page with WebGPU and shader-f16', () => {
+    expect(canRunZeos(CAPABLE)).toBe(true);
+    expect(defaultLocalModelId(CAPABLE)).toBe('zeos-qwen3.5-4b');
+  });
+
+  it.each<[string, ZeosCapabilities]>([
+    ['not cross-origin isolated (Safari)', { ...CAPABLE, crossOriginIsolated: false }],
+    ['no WebGPU', { ...CAPABLE, webGpu: { supported: false, reason: 'none' } }],
+    ['no shader-f16', { ...CAPABLE, webGpu: { supported: true, f16: false } }],
+    ['shader-f16 unknown', { ...CAPABLE, webGpu: { supported: true } }],
+    ['the WebGPU check not finished', { ...CAPABLE, webGpu: null }],
+    ['stub mode, not isolated', { crossOriginIsolated: false, webGpu: null, stub: true }],
+  ])('falls back to Gemma 4 E2B with %s', (_name, caps) => {
+    expect(canRunZeos(caps)).toBe(false);
+    expect(defaultLocalModelId(caps)).toBe('gemma-4-e2b');
+  });
+
+  it('needs no GPU for the ZEOS stub', () => {
+    expect(defaultLocalModelId({ crossOriginIsolated: true, webGpu: null, stub: true })).toBe(
+      'zeos-qwen3.5-4b',
+    );
+  });
+
+  it('reads this environment by default (Vitest: no WebGPU, not isolated)', () => {
+    expect(defaultLocalModelId()).toBe('gemma-4-e2b');
+  });
+});
+
 describe('resolveActiveLocalModelIdOrDefault', () => {
-  it('passes through a predefined id', () => {
-    expect(resolveActiveLocalModelIdOrDefault(cfg('gemma-4-e4b'))).toBe('gemma-4-e4b');
+  const INCAPABLE: ZeosCapabilities = { ...CAPABLE, webGpu: null };
+
+  it('passes through a saved predefined id, whatever the browser can run', () => {
+    expect(resolveActiveLocalModelIdOrDefault(cfg('gemma-4-e4b'), CAPABLE)).toBe('gemma-4-e4b');
+    expect(resolveActiveLocalModelIdOrDefault(cfg('gemma-4-e2b'), CAPABLE)).toBe('gemma-4-e2b');
+    expect(resolveActiveLocalModelIdOrDefault(cfg('zeos-qwen3.5-4b'), INCAPABLE)).toBe(
+      'zeos-qwen3.5-4b',
+    );
   });
 
-  it('falls back to the default when unset', () => {
-    expect(resolveActiveLocalModelIdOrDefault(cfg(undefined))).toBe(DEFAULT_LOCAL_GEMMA_ID);
+  it('uses the capability default when unset', () => {
+    expect(resolveActiveLocalModelIdOrDefault(cfg(undefined), CAPABLE)).toBe('zeos-qwen3.5-4b');
+    expect(resolveActiveLocalModelIdOrDefault(cfg(undefined), INCAPABLE)).toBe('gemma-4-e2b');
   });
 
-  it('falls back to the default for a stale custom id', () => {
-    expect(resolveActiveLocalModelIdOrDefault(cfg('custom:not-registered'))).toBe(
-      DEFAULT_LOCAL_GEMMA_ID,
+  it('uses the capability default for a stale custom id', () => {
+    expect(resolveActiveLocalModelIdOrDefault(cfg('custom:not-registered'), CAPABLE)).toBe(
+      'zeos-qwen3.5-4b',
+    );
+    expect(resolveActiveLocalModelIdOrDefault(cfg('custom:not-registered'), INCAPABLE)).toBe(
+      'gemma-4-e2b',
     );
   });
 });

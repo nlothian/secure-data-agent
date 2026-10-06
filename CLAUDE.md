@@ -108,8 +108,11 @@ the right size; `e2e/llm/modelDropdown.spec.ts` needs only WebGPU. It defaults t
 `GDA_E2E_MODEL=qwen3.5-4b` for Qwen, or `GDA_E2E_MODEL=zeos-qwen3.5-4b` for
 ZEOS Qwen 4B (see below).
 
-To exercise a specific tour stage without walking the whole flow, start
-a one-stage tour via the controller in DevTools:
+The tour never starts by itself (not even on a first visit); the header's
+Tour button starts it (`TourMenuButton`, which on another page sets
+localStorage `tour.autostart` and goes to `/`). To exercise a specific tour
+stage without walking the whole flow, start a one-stage tour via the
+controller in DevTools:
 
 ```js
 const c = await import('/src/lib/tour/controller.ts');
@@ -263,6 +266,17 @@ Explainer's conversation, via `sideTaskConfig` / `transformersModelIdFor`)
 use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
 one run holds the main chat.
 
+- **The default model.** With the local endpoint active and no saved model
+  (or a stale id), the model is `defaultLocalModelId()` in `models.ts`: ZEOS
+  Qwen 4B where `canRunZeos` holds (a cross-origin isolated page, and WebGPU
+  with shader-f16, or the dev stub), else Gemma 4 E2B (the default before
+  ZEOS, so Safari gets it). A saved choice always wins. The rule reads
+  `detectWebGpu()`'s cached result, so ModelSelector waits for that check
+  before it saves the default into the config, and the boot-time eager load
+  waits for it before it resolves the id. A first visit (no config at all)
+  still has no model selected ("Choose model"), and the default is only ever
+  loaded at boot when already cached, as before: a model is downloaded only
+  after the size dialog or on a send.
 - **Selecting it.** It is listed in every build, production included.
   Outside local-models mode it downloads from the Hub repo
   `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` pinned at revision

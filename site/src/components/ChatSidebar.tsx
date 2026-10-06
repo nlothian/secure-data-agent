@@ -219,13 +219,13 @@ export default function ChatSidebar() {
     void (async () => {
       const { resolveActiveLocalModelIdOrDefault, getLocalGemmaModel } =
         await import('../lib/localLlm/models');
-      const id = resolveActiveLocalModelIdOrDefault(config);
-      const model = getLocalGemmaModel(id);
-      if (cancelled) return;
-      if (!model) return decide('no-model', id);
       const { detectWebGpu } = await import('../lib/localLlm/webgpu');
+      // Before resolving: with no saved model the default depends on WebGPU.
       const gpu = await detectWebGpu();
       if (cancelled) return;
+      const id = resolveActiveLocalModelIdOrDefault(config);
+      const model = getLocalGemmaModel(id);
+      if (!model) return decide('no-model', id);
       if (!gpu.supported) return decide('no-webgpu', id);
       const { isModelCached } = await import('../lib/localLlm/modelCache');
       const cached = await isModelCached(model);

@@ -3,7 +3,7 @@ import useLLMConfig from '../hooks/useLLMConfig';
 import useLocalGemmaSwitcher from '../hooks/useLocalGemmaSwitcher';
 import useModelSwitchBlocked from '../hooks/useModelSwitchBlocked';
 import {
-  DEFAULT_LOCAL_GEMMA_ID,
+  defaultLocalModelId,
   formatGB,
   getLocalGemmaModel,
   isLocalGemmaId,
@@ -31,15 +31,23 @@ export default function ModelSelector({
   const [gpuStatus, setGpuStatus] = useState<WebGpuStatus | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Normalise a stale local model id (e.g. a `custom:<name>` entry left in
-  // localStorage by the removed custom-model picker) to the default, so the label,
-  // active-option highlight and the inference path all agree.
+  // Normalise a missing or stale local model id (e.g. a `custom:<name>` entry
+  // left in localStorage by the removed custom-model picker) to the default,
+  // so the label, active-option highlight and the inference path all agree.
+  // The default depends on WebGPU (`defaultLocalModelId`), so wait for that
+  // check first.
   const storedLocalId = config.models[LOCAL_GEMMA_ENDPOINT];
   useEffect(() => {
     if (!ready) return;
     if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return;
     if (isLocalGemmaId(storedLocalId)) return;
-    setModel(LOCAL_GEMMA_ENDPOINT, DEFAULT_LOCAL_GEMMA_ID);
+    let cancelled = false;
+    void detectWebGpu().then(() => {
+      if (!cancelled) setModel(LOCAL_GEMMA_ENDPOINT, defaultLocalModelId());
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [ready, config.activeEndpoint, storedLocalId, setModel]);
 
   useEffect(() => {

@@ -122,12 +122,6 @@ test.describe('real local Gemma — writes & runs SQL, renders a result grid', (
   );
 
   test.beforeEach(async ({ page }) => {
-    // Suppress the first-visit onboarding tour: its dialog overlays the
-    // chat/model UI and intercepts clicks. addInitScript re-runs on reload.
-    await page.addInitScript(() =>
-      localStorage.setItem('tour.seen', '1'),
-    );
-
     await page.goto('/');
     await expect(page.getByText('Choose model')).toBeVisible();
 
