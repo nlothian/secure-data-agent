@@ -261,8 +261,13 @@ use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
 one run holds the main chat.
 
 - **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
-  mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
-  zeosq4b`, which hard-links them from
+  mode. The same export is on the Hub as
+  `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` (public, ungated; its file sizes
+  match this model's `modelFiles.json` entry), but the site does not load
+  from it yet: the model thread reads `/models/<hfRepoId>/`, and ZEOS's
+  Hub loader and cache (vendored `model_cache.js`) is not wired in. Run
+  `cd site && npm run models:fetch -- zeosq4b`, which hard-links the files
+  from
   `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
   defaults to the zeos-webgpu-main worktree). After
   rebuilding the export, run `npm run models:manifest-local --

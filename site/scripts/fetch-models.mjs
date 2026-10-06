@@ -42,9 +42,11 @@ const ALIASES = {
 };
 
 /**
- * Repos that are not on the Hub: the ZEOS export is built in a ZEOS checkout
- * (`packages/zeos-browser/export/opt_zeos_surgery.py`), so its files are
- * hard-linked (or copied, across filesystems) from there.
+ * Repos linked from a local checkout instead of downloaded: the ZEOS export is
+ * built in a ZEOS checkout (`packages/zeos-browser/export/opt_zeos_surgery.py`),
+ * so its files are hard-linked (or copied, across filesystems) from there. The
+ * same export is on the Hub as `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16`, under a
+ * different repo id from the one the site loads it by.
  */
 const ZEOS_REPO = path.resolve(
   process.env.ZEOS_REPO ?? '/Users/nlothian/dev/github/metacognitionai/zeos-webgpu-main',
