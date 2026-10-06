@@ -1,7 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
+import { requireZeosSync } from './helpers/zeosSync';
 
 // Smoke test for the ZEOS plumbing: the page is cross-origin isolated, the
 // kernel worker boots Pyodide 314 from jsDelivr and micropip-installs the
@@ -10,11 +8,8 @@ import { expect, test } from '@playwright/test';
 // the coop-count-scripted case. Needs network (jsDelivr) and
 // `npm run zeos:sync` (public/zeos/ is generated and gitignored).
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const manifest = path.resolve(here, '..', 'public', 'zeos', 'manifest.json');
-
 test.describe('ZEOS kernel worker', () => {
-  test.skip(!fs.existsSync(manifest), 'public/zeos/manifest.json missing; run `npm run zeos:sync`');
+  requireZeosSync(test);
 
   test('page is cross-origin isolated', async ({ page }) => {
     await page.goto('/');
