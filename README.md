@@ -23,9 +23,9 @@ Chrome or Edge only for now: the model's largest weight tensor needs a single We
 - Long prompts are prefilled in 2k-token chunks (a single ONNX Runtime pass overflows above ~16k tokens), and the KV cache is kept between tool iterations: when the next prompt is a strict extension of the previous one, only the new tokens are prefilled.
 - For development and the end-to-end LLM tests the weights can be served from a local `models/` folder instead of the Hub; see [CLAUDE.md](CLAUDE.md) for the layout and commands.
 
-## ZEOS Qwen 4B (local models only)
+## ZEOS Qwen 4B
 
-`ZEOS Qwen 4B` runs the agent under the [ZEOS](https://github.com/metacognitionai/zeos) kernel. The kernel runs in Pyodide and drives Qwen3.5-4B, using the `-OPT` ONNX export with a key mask and attention output added. Your chat messages enter on a trusted ring (2), while file and tool output enters on the external ring (3). Once the model has read ring-3 content, effectful tools (WriteLines, RunPython, non-read-only SQL, …) need your approval. A toggle in the model dropdown switches between two gate modes:
+`ZEOS Qwen 4B` is the default local model where the browser can run it (WebGPU with shader-f16 and a cross-origin isolated page, so not Safari); elsewhere the default is `Gemma 4 E2B`. It runs the agent under the [ZEOS](https://github.com/metacognitionai/zeos) kernel. The kernel runs in Pyodide and drives Qwen3.5-4B, using the `-OPT` ONNX export with a key mask and attention output added. Your chat messages enter on a trusted ring (2), while file and tool output enters on the external ring (3). Once the model has read ring-3 content, effectful tools (WriteLines, RunPython, non-read-only SQL, …) need your approval. A toggle in the model dropdown switches between two gate modes:
 
 - **strict:** any tool output read this turn raises the gate.
 - **attention-only:** only measured attention to ring-3 content raises it.

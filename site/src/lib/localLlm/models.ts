@@ -1,4 +1,5 @@
 import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
+import { getCachedWebGpuStatus, type WebGpuStatus } from './webgpu';
 
 // The `LocalGemma*` names predate non-Gemma local models; they now cover
 // every in-browser model the local endpoint can run.
@@ -64,7 +65,7 @@ export const LOCAL_GEMMA_MODELS: readonly LocalGemmaModel[] = [
     family: 'gemma',
     hfRepoId: 'onnx-community/gemma-4-E2B-it-ONNX',
     approxBytes: 3_130_000_000,
-    notes: 'Faster and lighter. Recommended default.',
+    notes: 'Faster and lighter. The default where ZEOS Qwen 4B cannot run.',
   },
   {
     id: 'gemma-4-e4b',
@@ -91,8 +92,8 @@ export const LOCAL_GEMMA_MODELS: readonly LocalGemmaModel[] = [
     approxBytes: 2_821_280_718,
     notes:
       'Qwen 3.5 4B under the ZEOS kernel: tool results are untrusted (ring 3), and ' +
-      'side-effecting tools need your approval once the model has read them. Needs WebGPU ' +
-      'with shader-f16.',
+      'side-effecting tools need your approval once the model has read them. The default ' +
+      'model. Needs WebGPU with shader-f16 and a cross-origin isolated page (not Safari).',
     sideTaskModelId: 'qwen3.5-4b',
     // The commit ZEOS's own pages load (`zeos_browser.model_source`
     // HF_REPO / HF_REVISION). A commit, never a branch: the cache keys
@@ -148,7 +149,52 @@ export function sideTaskConfig(config: LLMConfig): LLMConfig {
   return { ...config, models: { ...config.models, [LOCAL_GEMMA_ENDPOINT]: active.sideTaskModelId } };
 }
 
-export const DEFAULT_LOCAL_GEMMA_ID: LocalGemmaId = 'gemma-4-e2b';
+/** The default local model, for a browser that can run it (`canRunZeos`). */
+export const PREFERRED_LOCAL_GEMMA_ID: LocalGemmaId = 'zeos-qwen3.5-4b';
+
+/** The default local model for a browser that cannot run ZEOS Qwen 4B. */
+export const FALLBACK_LOCAL_GEMMA_ID: LocalGemmaId = 'gemma-4-e2b';
+
+/** What `canRunZeos` needs to know about this browser. */
+export interface ZeosCapabilities {
+  /** `crossOriginIsolated` with `SharedArrayBuffer` (false in Safari, see CLAUDE.md). */
+  crossOriginIsolated: boolean;
+  /** `detectWebGpu()`'s result, or null while it has not finished. */
+  webGpu: WebGpuStatus | null;
+  /** Dev ZEOS stub mode: the scripted model thread needs no GPU. */
+  stub: boolean;
+}
+
+/**
+ * Whether ZEOS Qwen 4B can start here: the same preflight as
+ * `startKernelChatEngine` (a cross-origin isolated page, and unless in stub
+ * mode WebGPU with shader-f16, since the export has no wasm fallback). A
+ * WebGPU check that has not finished counts as no.
+ */
+export function canRunZeos(caps: ZeosCapabilities): boolean {
+  if (!caps.crossOriginIsolated) return false;
+  if (caps.stub) return true;
+  return caps.webGpu?.supported === true && caps.webGpu.f16 === true;
+}
+
+export function currentZeosCapabilities(): ZeosCapabilities {
+  return {
+    crossOriginIsolated:
+      globalThis.crossOriginIsolated === true && typeof SharedArrayBuffer !== 'undefined',
+    webGpu: getCachedWebGpuStatus(),
+    stub: isZeosStubMode(),
+  };
+}
+
+/**
+ * The local model for a config with no (valid) saved choice: ZEOS Qwen 4B
+ * where it can run, else Gemma 4 E2B (the default before ZEOS). Synchronous,
+ * so it reads `detectWebGpu()`'s cached result; callers that resolve before
+ * the check can have finished (boot) await `detectWebGpu()` first.
+ */
+export function defaultLocalModelId(caps: ZeosCapabilities = currentZeosCapabilities()): LocalGemmaId {
+  return canRunZeos(caps) ? PREFERRED_LOCAL_GEMMA_ID : FALLBACK_LOCAL_GEMMA_ID;
+}
 
 export function isLocalGemmaId(id: unknown): id is LocalGemmaId {
   return typeof id === 'string' && LOCAL_GEMMA_MODELS.some((m) => m.id === id);
@@ -167,13 +213,17 @@ export function formatGB(bytes: number): string {
  * The single source of truth for "which local Gemma model id is active",
  * applying the default fallback. Used by every local-inference entry point
  * (`streamLocalGemma`, `summariseCode`, `compactConversation`) and the
- * boot-time eager-load so they all resolve the same id. A stale id left in
- * localStorage by an older build (e.g. a `custom:<name>` entry from the
- * removed `.task` picker) falls back to the default.
+ * boot-time eager-load so they all resolve the same id. A saved choice
+ * always wins; with none, or a stale id left in localStorage by an older
+ * build (e.g. a `custom:<name>` entry from the removed `.task` picker), it
+ * is `defaultLocalModelId()`.
  */
-export function resolveActiveLocalModelIdOrDefault(config: LLMConfig): LocalGemmaId {
+export function resolveActiveLocalModelIdOrDefault(
+  config: LLMConfig,
+  caps: ZeosCapabilities = currentZeosCapabilities(),
+): LocalGemmaId {
   const requested = config.models[LOCAL_GEMMA_ENDPOINT];
-  return isLocalGemmaId(requested) ? requested : DEFAULT_LOCAL_GEMMA_ID;
+  return isLocalGemmaId(requested) ? requested : defaultLocalModelId(caps);
 }
 
 /**

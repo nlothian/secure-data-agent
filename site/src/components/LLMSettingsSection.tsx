@@ -16,7 +16,8 @@ import {
   type CustomEndpoint,
 } from '../types/llm';
 import {
-  resolveActiveLocalModelIdOrDefault,
+  defaultLocalModelId,
+  isLocalGemmaId,
   LOCAL_GEMMA_MODELS,
   formatGB,
   type LocalGemmaId,
@@ -492,14 +493,15 @@ function CustomRow({
 interface LocalGemmaRowProps {
   isLast: boolean;
   isActive: boolean;
-  selectedId: LocalGemmaId;
+  /** The saved local model id, if any (`config.models[LOCAL_GEMMA_ENDPOINT]`). */
+  storedId: string | undefined;
   onPickModel: (id: LocalGemmaId) => void;
 }
 
 function LocalGemmaRow({
   isLast,
   isActive,
-  selectedId,
+  storedId,
   onPickModel,
 }: LocalGemmaRowProps) {
   const rowStyle = isLast ? { ...styles.row, ...styles.rowLast } : styles.row;
@@ -519,6 +521,9 @@ function LocalGemmaRow({
 
   const supported = gpuStatus?.supported === true;
   const detecting = gpuStatus === null;
+  // Resolved here, not by the parent, so it re-renders once the WebGPU check
+  // the default depends on has finished.
+  const selectedId: LocalGemmaId = isLocalGemmaId(storedId) ? storedId : defaultLocalModelId();
   const reason = gpuStatus?.reason;
   const checking = switcher.state.phase === 'checking';
   const pending = switcher.state.phase === 'confirm' ? switcher.state : null;
@@ -617,7 +622,6 @@ export default function LLMSettingsSection() {
   if (!ready) return null;
 
   const localActive = config.activeEndpoint === LOCAL_GEMMA_ENDPOINT;
-  const localSelectedId = resolveActiveLocalModelIdOrDefault(config);
 
   const handleLocalPickModel = (id: LocalGemmaId): void => {
     if (switchBlocked) return;
@@ -693,7 +697,7 @@ export default function LLMSettingsSection() {
         <LocalGemmaRow
           isLast={BUILT_IN_PROVIDERS.length === total - 1}
           isActive={localActive}
-          selectedId={localSelectedId}
+          storedId={config.models[LOCAL_GEMMA_ENDPOINT]}
           onPickModel={handleLocalPickModel}
         />
 
