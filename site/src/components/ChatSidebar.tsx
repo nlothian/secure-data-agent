@@ -52,6 +52,7 @@ import { clearScratchpad } from '../lib/agentFs';
 import { registerChatBridge } from '../lib/tour/bridge';
 import type { TokenUsage } from '../lib/tokenUsageStore';
 import type { ChatMessage } from '../types/chat';
+import { isCompactedConversation, ZEOS_COMPACTED_REFUSAL } from '../lib/zeos/zeosPrompt';
 import { isLocalGemmaEndpoint, LOCAL_GEMMA_ENDPOINT } from '../types/llm';
 import {
   ChatAddOnIcon,
@@ -414,6 +415,17 @@ export default function ChatSidebar() {
         createdAt: Date.now(),
       };
 
+      // ZEOS Qwen 4B cannot continue a chat compacted under another model
+      // (zeosPrompt.ts, `isCompactedConversation`): refuse the send without
+      // starting anything, and say why in the chat.
+      if (isZeos && isCompactedConversation(history.messages)) {
+        appendMessage(userMsg);
+        appendMessage(assistantMsg);
+        setLastAssistantContent(ZEOS_COMPACTED_REFUSAL, true);
+        flush();
+        return;
+      }
+
       // For assistant turns prefer `historyContent` (model-replay format with
       // proper `<|tool_call>` tokens) over `content` (UI-format text with
       // `→/←` markers). Without this swap, local-Gemma sees its own past
@@ -683,6 +695,7 @@ export default function ChatSidebar() {
 
   const messages = history.messages;
   const hasMessages = messages.length > 0;
+  const zeosCompacted = useMemo(() => isCompactedConversation(messages), [messages]);
 
   // Mirror the system prompt that sendPrompt assembles, so the user can see
   // exactly what the model will receive on the next turn.
@@ -803,6 +816,12 @@ export default function ChatSidebar() {
         {unconfigured && (
           <div className="chat-banner">
             Configure an LLM provider in Settings to start chatting.
+          </div>
+        )}
+        {isZeos && zeosCompacted && (
+          <div className="chat-banner" role="status" data-testid="zeos-compacted-banner">
+            This chat was compacted under another model, so ZEOS Qwen 4B cannot continue it.
+            Start a new chat to use ZEOS Qwen 4B.
           </div>
         )}
 

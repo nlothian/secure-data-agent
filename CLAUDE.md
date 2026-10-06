@@ -479,6 +479,18 @@ one run holds the main chat.
   (`ModelTextEscaper`: Gemma tool tokens defanged, a zero-width space after
   `→` / `←`), so a reply cannot spell a tool exchange that
   `parseGemmaHistory` would read back.
+- **A compacted chat cannot run under ZEOS.** Compaction is off while this
+  model is selected, but a chat compacted under another model (a
+  `kind: 'compaction'` message) can be switched to it. Its dropped turns are
+  not replayed, so a demotion among them would be forgotten, and its summary
+  (written from untrusted content) would be appended to the system prompt,
+  which ZEOS treats as trusted. So with ZEOS selected such a chat shows a
+  banner, and a send is refused in the chat (`isCompactedConversation`,
+  `ZEOS_COMPACTED_REFUSAL` in `zeosPrompt.ts`) before anything starts.
+  `streamZeos` refuses a system prompt holding the compaction heading too,
+  before the engine or a run is touched, and `zeosSystemPrompt` throws on
+  the heading anywhere and on any text after the agent prompt, so no path
+  carries a summary into ZEOS. Start a new chat, or switch back.
 - **A demotion is never forgotten.** It is saved with the message
   (`onTrust`) as soon as it happens, and every exit saves the turn's trust
   again: the reply, Stop, the call cap, an error, an engine crash or stall,

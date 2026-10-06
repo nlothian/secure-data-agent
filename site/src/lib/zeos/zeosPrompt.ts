@@ -15,6 +15,8 @@
  *   `CallSkill({"skill":"sql"})`, like the prompt's other examples.
  */
 import { buildAgentSystemPrompt, type AgentPromptFeatures, type AgentPromptOptions } from '../agentTools';
+import { COMPACTION_HEADER } from '../autoCompaction';
+import type { ChatMessage } from '../../types/chat';
 import runSqlMd from '../../prompts/agent/runSql.md?raw';
 import zeosRunSqlMd from '../../prompts/zeos/runSql.md?raw';
 import zeosSqlSkillMd from '../../prompts/zeos/SqlSkill.md?raw';
@@ -43,17 +45,64 @@ export function zeosAgentSystemPrompt(features: AgentPromptFeatures): string {
 }
 
 /**
+ * What the chat says when a compacted conversation is sent to this model
+ * (re-review finding N3).
+ */
+export const ZEOS_COMPACTED_REFUSAL =
+  'This conversation was compacted under another model, so it cannot be continued with ' +
+  'ZEOS Qwen 4B: the summary of the compacted turns would enter its trusted system prompt, ' +
+  'and their trust record would be lost. Start a new chat to use ZEOS Qwen 4B, or switch ' +
+  'back to the other model to continue this one.';
+
+/** A compacted conversation reached this model; nothing was sent to it. */
+export class ZeosCompactedConversationError extends Error {
+  constructor() {
+    super(ZEOS_COMPACTED_REFUSAL);
+    this.name = 'ZeosCompactedConversationError';
+  }
+}
+
+const COMPACTION_HEADING = COMPACTION_HEADER.trim();
+
+/**
+ * Whether a chat holds a compaction: a `kind: 'compaction'` message (the
+ * summary another model wrote of the turns it dropped). Compaction is off
+ * while this model is selected, but a chat compacted under another model can
+ * be switched to it. Such a chat cannot run under ZEOS: the dropped turns are
+ * not replayed (so a demotion among them is forgotten), and the summary,
+ * written from untrusted content, would be appended to the system prompt,
+ * which ZEOS treats as trusted.
+ */
+export function isCompactedConversation(messages: readonly Pick<ChatMessage, 'kind'>[]): boolean {
+  return messages.some((m) => m.kind === 'compaction');
+}
+
+/** Whether a system prompt carries a compaction summary (`buildCompactionContext`'s heading). */
+export function systemHasCompaction(system: string): boolean {
+  return system.includes(COMPACTION_HEADING);
+}
+
+/**
  * The system prompt as this model gets it. The chat sends the shared agent
- * prompt for `features` plus anything after it (a compaction summary); that
- * prefix is rebuilt as `zeosAgentSystemPrompt`. Any other prompt is kept, with
- * CallSkill spelled out, unless it carries the shared RunSQL section: that
- * would be the agent prompt for other features, and the model would be told
- * the WriteLines + RunSQL(path) workflow, so it throws instead.
+ * prompt for `features`, which is rebuilt as `zeosAgentSystemPrompt`. Nothing
+ * may follow it: the only thing the chat ever appends is a compaction
+ * summary, and a summary in any position throws
+ * `ZeosCompactedConversationError`, so untrusted text can never reach the
+ * trusted descriptor this way. Any other prompt is kept, with CallSkill
+ * spelled out, unless it carries the shared RunSQL section: that would be the
+ * agent prompt for other features, and the model would be told the
+ * WriteLines + RunSQL(path) workflow, so it throws instead.
  */
 export function zeosSystemPrompt(system: string, features: AgentPromptFeatures): string {
+  if (systemHasCompaction(system)) throw new ZeosCompactedConversationError();
   const shared = buildAgentSystemPrompt(features);
   if (system.startsWith(shared)) {
-    return zeosAgentSystemPrompt(features) + spellOutCallSkill(system.slice(shared.length));
+    if (system.slice(shared.length).trim()) {
+      throw new Error(
+        'zeosSystemPrompt: text follows the agent prompt; ZEOS Qwen 4B takes the agent prompt alone.',
+      );
+    }
+    return zeosAgentSystemPrompt(features);
   }
   if (system.includes(runSqlMd.trim())) {
     throw new Error(

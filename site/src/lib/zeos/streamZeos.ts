@@ -74,7 +74,13 @@ import {
   userTextForZeos,
 } from './zeosHistory';
 import * as store from './zeosSessionStore';
-import { dispatchForZeos, zeosSystemPrompt, type ZeosCallHow } from './zeosPrompt';
+import {
+  dispatchForZeos,
+  systemHasCompaction,
+  ZeosCompactedConversationError,
+  zeosSystemPrompt,
+  type ZeosCallHow,
+} from './zeosPrompt';
 import {
   isTrustedToolResult,
   paramTypesFromTools,
@@ -567,6 +573,14 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     .map((m) => m.content)
     .join('\n\n')
     .trim();
+  // A chat compacted under another model cannot run here (its summary would
+  // enter the trusted system prompt, and the dropped turns' trust is gone):
+  // refuse before any engine or run is touched. The chat refuses it first
+  // (`isCompactedConversation`); this is the second layer.
+  if (systemHasCompaction(system)) {
+    onError(new ZeosCompactedConversationError());
+    return;
+  }
   const turns = messages.filter((m) => m.role !== 'system');
   const last = turns[turns.length - 1];
   if (!last || last.role !== 'user') {
