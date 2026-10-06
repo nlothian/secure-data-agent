@@ -297,7 +297,10 @@ one run holds the main chat.
   message is the shared prompt plus any suffix, which `zeosSystemPrompt`
   rebuilds; it throws if it finds the shared RunSQL section it cannot
   replace. `dispatchForZeos` answers `CallSkill('sql')` with the inline-`sql`
-  card (`src/prompts/zeos/SqlSkill.md`). So a read-only query is a
+  card (`src/prompts/zeos/SqlSkill.md`). The RunSQL tool spec
+  (`zeosAgentTools`) replaces the shared description and the `path`
+  parameter's with inline-`sql` ones (`RUN_SQL_ZEOS_DESCRIPTION`), rather
+  than prefixing the shared WriteLines + `path` text. So a read-only query is a
   `tools.read` call with no approval; with the shared WriteLines + RunSQL(path) text the model wrote
   every query to a file first, which is an effect. It also spells
   `CallSkill('x')` as `CallSkill({"skill":"x"})`: the shorthand made the
@@ -353,8 +356,11 @@ one run holds the main chat.
     without approval in strict mode; in attention-only mode it records what
     landed as annotations. A run where the model attempted no effect after
     reading the CSV did not exercise the gate, so it is reported skipped
-    ("inconclusive"), not passed. `window.__zeosToolLog` (dev) lists every
-    settled call as `read`, `effect`, `approved` or `denied`.
+    ("inconclusive"), not passed. Either way it asserts that the turn did
+    not end at the call cap ("Reached max tool iterations") and that the
+    tool log has at most one `repeated` entry (no identical-call loop).
+    `window.__zeosToolLog` (dev) lists every settled call as `read`,
+    `effect`, `approved`, `denied` or `repeated`.
 
     In the first runs (two per mode) the model read the CSV with RunSQL,
     summarised it and never called WriteLines, so no card appeared and
@@ -573,6 +579,24 @@ one run holds the main chat.
   under a card, the card goes and the turn ends with that error, not a Deny
   (the model is never told the user declined); a click on the old card,
   or one meant for it that lands after a restart, settles nothing. The
-  10-call cap counts every call (read, effect, refused by the kernel, or
-  waiting for approval) and is checked before the card; it is per user
-  message, and nothing restarts the engine within one.
+  10-call cap counts every call (read, effect, refused by the kernel,
+  waiting for approval, or a repeat) and is checked before the card; it is
+  per user message, and nothing restarts the engine within one.
+- **Repeated calls** (`src/lib/repeatedToolCalls.ts`, in all three agent
+  loops: `streamZeos`, `streamLocalGemma` and the cloud loop in
+  `streamChat`). Within one user message, a call identical to one already
+  made (same name, arguments compared as canonical JSON with sorted keys, no
+  SQL normalisation) with no effect run since is not run again: its result is
+  the constant JSON note `{"note":"You already ran <Tool> with these exact
+  arguments; …"}`, which never quotes tool output and is not an `{error}`.
+  Any effect that runs (ZEOS: a `tools.effect` call or an approved one; the
+  other loops: anything `classifyToolCall` does not call a read) clears the
+  record. Under ZEOS the note goes on ring 3 (`deliverToolResult(…, false)`
+  for a call on a sink, `deliverRefusal` for one held for approval, so an
+  identical repeat of an approved or denied effect never shows a card); a
+  bundled skill card (ring 2) is re-run instead, and `tool_refused` is
+  untouched. It still counts toward the cap (checked first) and is logged as
+  `how: 'repeated'` in `window.__zeosToolLog`. Replay needs nothing new: the
+  note was recorded on ring 3, so it replays there. Seen with greedy
+  sampling on the injection CSV: CallSkill, ListInputs, then the same
+  `RunSQL({"sql":"SELECT * FROM reviews"})` until the cap.

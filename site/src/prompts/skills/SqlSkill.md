@@ -21,9 +21,9 @@ Executes SQL against an in-browser DuckDB-WASM database. The query is loaded fro
 → RunSQL({"path":"/scratchpad/by_region.sql"})
 ```
 
-- On success: `{ columns: [{name, type}], sample_rows: unknown[][], total_rows: number, registered_as: string, path: string }`.
+- On success: `{ columns: [{name, type}], sample_rows: unknown[][], total_rows: number, registered_as: string }`.
 - On failure: `{ error: string, path: string }`. To self-correct, `ReadLines(path, …)` to re-inspect the query, then `WriteLines(path, …)` to fix.
-- **You only see 3 sample rows.** The user's UI panel shows up to 1000 rows; you don't. Use `total_rows` to decide whether `sample_rows` is enough, and switch to aggregations or Python for anything that needs the full result.
+- **`sample_rows` holds at most the first 10 rows; `total_rows` is the full count.** When `sample_rows` holds all `total_rows` rows, you have the whole result: answer from it. Otherwise the user's UI panel shows up to 1000 rows and you don't, so switch to aggregations or Python for anything that needs the full result.
 - **The full Arrow result is always at `arrow_inputs[registered_as]`** — `registered_as` is always `"_last_sql_result"`. To work with all rows in Python, read `pa.ipc.open_stream(arrow_inputs["_last_sql_result"]).read_all()`. It is overwritten on the next `RunSQL` call.
 - Long string cells in `sample_rows` are truncated with a `[truncated, full=N chars]` suffix so the schema stays readable. To see a full cell, query that row in Python from `_last_sql_result`.
 - DuckDB state persists for the whole chat session — tables you create stay queryable on later calls.

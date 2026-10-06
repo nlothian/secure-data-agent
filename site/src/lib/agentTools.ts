@@ -24,6 +24,7 @@ import {
 } from './agentFs';
 import {
   LAST_SQL_RESULT_NAME,
+  LLM_SAMPLE_ROWS,
   type DataFormat,
   type LoadedTable,
   type RegisteredInputMeta,
@@ -978,9 +979,11 @@ const RunSQLTool: AgentTool<RunSQLInput, RunSQLOutcome, RunSQLResult> = {
     'Execute a SQL query in DuckDB-WASM. The query is loaded from a `.sql` ' +
     'file at `path` under /scratchpad or /input — write it with WriteLines ' +
     'first. On success returns { columns: [{name, type}], sample_rows: ' +
-    'unknown[][], total_rows: number, registered_as: string, path: string }. ' +
+    'unknown[][], total_rows: number, registered_as: string }. ' +
     'On failure returns { error: string, path: string }. ' +
-    'You only see the first 3 rows (`sample_rows`); the FULL result of ' +
+    `\`sample_rows\` holds at most the first ${LLM_SAMPLE_ROWS} rows and ` +
+    '`total_rows` the full count; when `sample_rows` holds all ' +
+    '`total_rows` rows you have the whole result. The FULL result of ' +
     'every successful RunSQL is auto-published to the input registry under ' +
     `\`registered_as\` (always "${LAST_SQL_RESULT_NAME}", overwritten on ` +
     'each call). To work with all rows, call RunPython and read ' +
