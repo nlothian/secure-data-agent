@@ -62,16 +62,16 @@ describe('zeosPrompt', () => {
       calls.push(`${name}:${JSON.stringify(args)}`);
       return name === 'CallSkill' ? "Use CallSkill('sql') next." : { ok: true };
     };
-    const sql = await dispatchForZeos('CallSkill', { skill: 'sql' }, dispatch);
+    const sql = await dispatchForZeos('CallSkill', { skill: 'sql' }, 'read', dispatch);
     expect(sql).toContain('RunSQL(sql)');
     expect(calls).toEqual([]);
-    expect(await dispatchForZeos('CallSkill', { skill: 'data-loading' }, dispatch)).toBe(
+    expect(await dispatchForZeos('CallSkill', { skill: 'data-loading' }, 'read', dispatch)).toBe(
       'Use CallSkill({"skill":"sql"}) next.',
     );
-    expect(await dispatchForZeos('ListInputs', {}, dispatch)).toEqual({ ok: true });
+    expect(await dispatchForZeos('ListInputs', {}, 'read', dispatch)).toEqual({ ok: true });
   });
 
-  it('runs a read-only RunSQL with extension autoloading off, and nothing else', async () => {
+  it('guards every RunSQL the kernel ran as a read, whatever the TS classifier says', async () => {
     const guarded: string[] = [];
     const guard = async <T,>(fn: () => Promise<T>): Promise<T> => {
       guarded.push('in');
@@ -80,13 +80,22 @@ describe('zeosPrompt', () => {
       return r;
     };
     const dispatch = async (name: string) => name;
-    expect(await dispatchForZeos('RunSQL', { sql: 'SELECT 1' }, dispatch, guard)).toBe('RunSQL');
+    expect(await dispatchForZeos('RunSQL', { sql: 'SELECT 1' }, 'read', dispatch, guard)).toBe('RunSQL');
     expect(guarded).toEqual(['in', 'out']);
     guarded.length = 0;
-    // Effects (approved by the user) and other tools run as they are.
-    await dispatchForZeos('RunSQL', { sql: 'CREATE TABLE t AS SELECT 1' }, dispatch, guard);
-    await dispatchForZeos('RunSQL', { path: '/scratchpad/q.sql' }, dispatch, guard);
-    await dispatchForZeos('ListInputs', {}, dispatch, guard);
+    // Python's re (without re.ASCII) reads `Kset` (a Kelvin sign) as one word,
+    // so the kernel ran it as a read; RegExp sees the keyword SET (N2). The
+    // kernel's verdict decides, so it runs guarded.
+    await dispatchForZeos('RunSQL', { sql: 'SELECT 1 AS Kset' }, 'read', dispatch, guard);
+    // Any SQL the kernel put on tools.read, even one the TS side calls an effect.
+    await dispatchForZeos('RunSQL', { sql: 'CREATE TABLE t AS SELECT 1' }, 'read', dispatch, guard);
+    expect(guarded).toEqual(['in', 'out', 'in', 'out']);
+    guarded.length = 0;
+    // Effects the kernel let land or the user approved, and other tools, run as they are.
+    await dispatchForZeos('RunSQL', { sql: 'SELECT 1' }, 'effect', dispatch, guard);
+    await dispatchForZeos('RunSQL', { sql: 'SELECT 1' }, 'approved', dispatch, guard);
+    await dispatchForZeos('RunSQL', { path: '/scratchpad/q.sql' }, 'approved', dispatch, guard);
+    await dispatchForZeos('ListInputs', {}, 'read', dispatch, guard);
     expect(guarded).toEqual([]);
   });
 });

@@ -18,7 +18,6 @@ import { buildAgentSystemPrompt, type AgentPromptFeatures, type AgentPromptOptio
 import runSqlMd from '../../prompts/agent/runSql.md?raw';
 import zeosRunSqlMd from '../../prompts/zeos/runSql.md?raw';
 import zeosSqlSkillMd from '../../prompts/zeos/SqlSkill.md?raw';
-import { classifyToolCall } from './zeosToolClasses';
 
 const CALL_SKILL_SHORTHAND = /CallSkill\('([A-Za-z0-9_-]+)'\)/g;
 
@@ -72,22 +71,30 @@ const guardWithDuckDb: ReadSqlGuard = async (fn) =>
   (await import('../duckdb')).withoutExtensionAutoload(fn);
 
 /**
+ * How the kernel let a call run: from `tools.read` (no approval needed),
+ * from `tools.effect` (the job was trusted enough to write it), or on the
+ * user's approval after it refused (`ZeosToolLogEntry['how']`).
+ */
+export type ZeosCallHow = 'read' | 'effect' | 'approved';
+
+/**
  * Run a tool call for this model: `CallSkill({"skill":"sql"})` returns the
  * inline-`sql` card, and every skill card has its `CallSkill('x')` spelled
- * out. A RunSQL the classifier calls a read (it ran with no approval) runs
- * under `guardRead`, DuckDB with extension autoloading off. Anything else
- * goes to `dispatch` unchanged.
+ * out. A RunSQL the kernel ran as a read (`how === 'read'`: it landed on
+ * `tools.read` with no approval) runs under `guardRead`, DuckDB with
+ * extension autoloading off. That is keyed on what the kernel did, never on
+ * classifying the SQL again here: where Python's `re` and `RegExp` disagree
+ * (re-review finding N2), the kernel's verdict is the one that counted.
+ * Anything else goes to `dispatch` unchanged.
  */
 export async function dispatchForZeos(
   name: string,
   args: unknown,
+  how: ZeosCallHow,
   dispatch: (name: string, args: unknown) => Promise<unknown>,
   guardRead: ReadSqlGuard = guardWithDuckDb,
 ): Promise<unknown> {
-  if (name === 'RunSQL') {
-    const fields = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
-    if (classifyToolCall(name, fields) === 'read') return guardRead(() => dispatch(name, args));
-  }
+  if (name === 'RunSQL' && how === 'read') return guardRead(() => dispatch(name, args));
   if (name !== 'CallSkill') return dispatch(name, args);
   if ((args as { skill?: unknown } | null)?.skill === 'sql') return spellOutCallSkill(zeosSqlSkillMd.trim());
   const result = await dispatch(name, args);

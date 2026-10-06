@@ -74,7 +74,7 @@ import {
   userTextForZeos,
 } from './zeosHistory';
 import * as store from './zeosSessionStore';
-import { dispatchForZeos, zeosSystemPrompt } from './zeosPrompt';
+import { dispatchForZeos, zeosSystemPrompt, type ZeosCallHow } from './zeosPrompt';
 import {
   isTrustedToolResult,
   paramTypesFromTools,
@@ -545,8 +545,8 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   const features = { ...getFeatures(), runSubAgent: false };
   const baseDispatch =
     opts.toolDispatcher ?? ((name: string, input: unknown, sig?: AbortSignal) => runAgentTool(name, input, sig, features));
-  const dispatch = (name: string, input: unknown, sig?: AbortSignal): Promise<unknown> =>
-    dispatchForZeos(name, input, (n, i) => Promise.resolve(baseDispatch(n, i, sig)));
+  const dispatch = (name: string, input: unknown, how: ZeosCallHow, sig?: AbortSignal): Promise<unknown> =>
+    dispatchForZeos(name, input, how, (n, i) => Promise.resolve(baseDispatch(n, i, sig)));
   const fmt = getPromptFormat('zeos-qwen', tools);
 
   let accumulated = '';
@@ -720,11 +720,11 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     const runCall = async (
       name: string,
       args: Record<string, unknown>,
-      how: ZeosToolLogEntry['how'],
+      how: ZeosCallHow,
     ): Promise<void> => {
       logToolCall({ name, args, how });
       const argsJson = JSON.stringify(args);
-      const result = await dispatch(name, args, signal);
+      const result = await dispatch(name, args, how, signal);
       const resultStr = clampToolResultSize(name, JSON.stringify(result));
       text.toolExchange(name, argsJson, resultStr);
       s.toolCount += 1;
@@ -979,7 +979,7 @@ async function recordAttention(run: ZeosChatRun): Promise<void> {
 export interface ZeosToolLogEntry {
   name: string;
   args: Record<string, unknown>;
-  how: 'read' | 'effect' | 'approved' | 'denied';
+  how: ZeosCallHow | 'denied';
 }
 
 /** Dev/e2e: every settled tool call, on `window.__zeosToolLog`. */
