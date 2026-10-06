@@ -3,6 +3,7 @@ import mdx from "@astrojs/mdx";
 import react from "@astrojs/react";
 import sourcecodePlugin from "./scripts/sourcecode-vite-plugin.mjs";
 import localModelsPlugin from "./scripts/local-models-vite-plugin.mjs";
+import ortWasmCdnPlugin from "./scripts/ort-wasm-cdn-vite-plugin.mjs";
 
 export default defineConfig({
   integrations: [mdx(), react()],
@@ -33,7 +34,9 @@ export default defineConfig({
   },
   vite: {
     // localModelsPlugin is a no-op unless PUBLIC_LOCAL_MODELS=1 (dev/e2e only).
-    plugins: [sourcecodePlugin(), localModelsPlugin()],
+    // ortWasmCdnPlugin is build-only: ORT's wasm comes from jsDelivr, since
+    // the file is over Cloudflare Pages' 25 MiB limit.
+    plugins: [sourcecodePlugin(), localModelsPlugin(), ortWasmCdnPlugin()],
     server: {
       cors: true,
     },
@@ -44,6 +47,8 @@ export default defineConfig({
     // as separate chunks rather than being inlined into one multi-MB blob.
     worker: {
       format: 'es',
+      // The LLM and ZEOS model workers bundle ORT, so they need it too.
+      plugins: () => [ortWasmCdnPlugin()],
     },
     // Under pnpm, @uiw/react-codemirror's ESM lives in a nested .pnpm path and
     // resolves @codemirror/state through its own symlinked deps, while the

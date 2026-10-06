@@ -20,8 +20,7 @@
  */
 import * as ort from 'onnxruntime-web/webgpu';
 import { Tokenizer } from '@huggingface/tokenizers';
-import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
-import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url';
+import { ortWasmPaths } from '../lib/localLlm/ortWasm';
 import { serveChannel } from '../lib/zeos/vendor/model_channel.js';
 import { OptZeosWorker, isOptZeosMeta } from '../lib/zeos/vendor/opt_zeos_worker.js';
 
@@ -88,7 +87,7 @@ self.onmessage = async (event: MessageEvent) => {
   try {
     await requireWebGpu();
     if (ort.env.wasm) {
-      ort.env.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
+      ort.env.wasm.wasmPaths = await ortWasmPaths(ort.env.versions.web);
       // One thread, as in llm.worker.ts: the page is cross-origin isolated,
       // so ORT would otherwise start a pthread pool it does not need here.
       ort.env.wasm.numThreads = 1;

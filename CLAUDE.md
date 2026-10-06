@@ -146,6 +146,18 @@ suite once before you finish.
   --project=chromium --last-failed`, or `-g '<title>'`) until they pass,
   then do the final full run.
 
+## Hosting
+
+Production is Cloudflare Pages (`secure-data-agent.nicklothian.com`): root
+`site/`, `npm run build`, output `dist`, with `public/_headers` honoured.
+Pages rejects any file over 25 MiB. ONNX Runtime's
+`ort-wasm-simd-threaded.asyncify.wasm` is ~26.9 MB, so a production build
+loads it (and its `.mjs`) from jsDelivr at the installed onnxruntime-web
+version. `src/lib/localLlm/ortWasm.ts` sets the workers' `wasmPaths`, and
+`scripts/ort-wasm-cdn-vite-plugin.mjs` rewrites ORT's own
+`new URL(…wasm, import.meta.url)` fallback, so the file is never emitted.
+Dev still serves it from node_modules. Keep every `dist/` file under 25 MiB.
+
 ## Cross-origin isolation (COOP/COEP)
 
 `astro dev` and `astro preview` serve every page with
