@@ -216,6 +216,10 @@ RunPython worker.
   `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos npm run zeos:sync`.
   The sync records `dirty: true` if that checkout holds uncommitted edits
   under `src`, `packages` or `demo`, which it would build in.
+  The spoof-notice change (`spoof_notice: false` for the chat agent) is on
+  the fork's branch `fix/chat-spoof-notice` (38ab62f), synced from its own
+  worktree `/Users/nlothian/dev/github/metacognitionai/zeos-spoof-notice`
+  and not yet on `main`; once it is merged there, re-sync from `main`.
 - The same script vendors ZEOS's JS from `packages/zeos-browser/web`
   (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
   `transformers_worker.js`, and `model_cache.js`, `opfs_store.js`,
@@ -426,7 +430,13 @@ one run holds the main chat.
   with Qwen's structural tags defanged (`escapeForQwenPrompt`, via
   `toolResultForZeos` / `userTextForZeos`), and the model worker tokenizes
   them with no special tokens (`encodePlain`), so neither can close a turn or
-  forge a tool call.
+  forge a tool call. The model itself is not told: the chat-agent case sets
+  ZEOS's descriptor field `spoof_notice: false`, so the kernel raises the
+  alarm but injects no `<FAULT kind=spoof_fault>` notice after the result. With
+  the notice, the 4B (greedy, no thinking) read it as a refused call and re-ran
+  the identical `SELECT * FROM reviews` until the call cap on a table full of
+  tag spellings (`zeosInjection`'s CSV); every result was complete, and plain
+  Qwen 3.5 4B on the same data did not loop.
 - **Stub mode (dev only).** Set localStorage `gda.zeos.stub` to
   `{"replies": [...], "attention": "first" | "recent" | "uniform" | "none"}`
   and reload. The scripted chat stub (`src/lib/zeos/scriptedChatModel.ts`)
