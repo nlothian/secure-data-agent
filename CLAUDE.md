@@ -183,7 +183,8 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
   jsDelivr. The ZEOS e2e specs fail, saying to run `npm run zeos:sync`, when
   `public/zeos/` is missing (`e2e/helpers/zeosSync.ts`);
   `GDA_E2E_SKIP_ZEOS=1` skips them on purpose. `GDA_E2E_PORT` moves the e2e
-  dev server off 4321 (to run two worktrees' suites side by side).
+  dev server off 4321 (to run two worktrees' suites side by side); a server
+  already on that port is never reused, since it may be another worktree's.
 
 ## ZEOS Qwen 4B (model `zeos-qwen3.5-4b`)
 
@@ -204,26 +205,6 @@ compaction are off for this model. Side tasks (code summaries, the
 Explainer's conversation, via `sideTaskConfig` / `transformersModelIdFor`)
 use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
 one run holds the main chat.
-
-- **Engine lifecycle** (`src/lib/localLlm/engineLifecycle.ts`). Switching
-  away from this model calls `disposeZeos()`, which terminates the kernel
-  worker and the model thread (frees ~2.8 GB of GPU memory). Switching to it
-  unloads the transformers.js worker unless it holds `qwen3.5-4b`, and then
-  unloads that whenever it has been idle for 60 s
-  (`SIDE_TASK_IDLE_UNLOAD_MS`): the two 4B models share the GPU only while a
-  side task runs, at the cost of a ~4 s reload for a side task after a quiet
-  minute. The ZEOS export cannot serve side tasks itself: it is a different
-  graph, and a second conversation on its kernel would close and re-prefill
-  the chat's run. The model cannot be switched while the chat or an
-  Explainer reply streams (the picker is disabled with the reason).
-- **Crashes and Stop.** A kernel worker or model-thread crash, a model call
-  past `ZEOS_MODEL_CALL_TIMEOUT_MS` (180 s, ~5x the first-turn prefill), or
-  Pyodide's fatal error disposes the kernel: the turn in flight ends with
-  the error, the trust indicator reads "ZEOS error" with the reason, and the
-  next message starts a fresh engine and replays the history. Stop rejects
-  the pending kernel call at once; if the kernel has not finished it within
-  `ZEOS_ABORT_WATCHDOG_MS` (10 s) the engine is restarted, and a message sent
-  meanwhile waits for that.
 
 - **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
   mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
@@ -417,25 +398,62 @@ one run holds the main chat.
   may or may not be the mask's doing.
   `GDA_E2E_ZEOS_MASK=1` runs `realModelSql.spec.ts` with it on; the spec logs
   `[realModelSql] zeos mask=…` with the second cache's run time either way.
+- **Engine lifecycle** (`src/lib/localLlm/engineLifecycle.ts`). Switching
+  away from this model calls `disposeZeos()`, which terminates the kernel
+  worker and the model thread (frees ~2.8 GB of GPU memory). Switching to it
+  unloads the transformers.js worker unless it holds `qwen3.5-4b`, and then
+  unloads that whenever it has been idle for 60 s
+  (`SIDE_TASK_IDLE_UNLOAD_MS`): the two 4B models share the GPU only while a
+  side task runs, at the cost of a ~4 s reload for a side task after a quiet
+  minute. The ZEOS export cannot serve side tasks itself: it is a different
+  graph, and a second conversation on its kernel would close and re-prefill
+  the chat's run. The model cannot be switched while the chat or an
+  Explainer reply streams (the picker is disabled with the reason).
+- **Crashes, Stop and stalls.** A kernel worker or model-thread crash, a
+  model call past `ZEOS_MODEL_CALL_TIMEOUT_MS` (180 s, ~5x the first-turn
+  prefill), Pyodide's fatal error, or a kernel that stops making progress
+  (`ZEOS_MAX_IDLE_STEPS`, 64 `step` batches in a row with no events while the
+  job is not waiting on `chat.user`: it waits on a delivery the loop will
+  never make) disposes the kernel: the turn in flight ends with the error,
+  the trust indicator reads "ZEOS error" with the reason, and the next
+  message starts a fresh engine and replays the history. A
+  `NotCrossOriginIsolatedError` fails the start instead, so nothing is
+  disposed or retried until the next message. Stop lets a `step` batch
+  already in flight finish for up to `ZEOS_STOP_GRACE_MS` (2 s; a decode
+  batch takes ~0.6 s), so a demotion in it is read and saved, then rejects
+  the pending kernel call; if the kernel has not finished it within
+  `ZEOS_ABORT_WATCHDOG_MS` (10 s) the engine is restarted, and a message sent
+  meanwhile waits for that.
 - **Runs.** There is one ZEOS `ChatRun` per conversation, keyed by system
-  prompt, thinking, gate mode, tool-choice masking and prior messages. A new chat, reload, retry or
-  abort opens a fresh run and replays history (`buildZeosImport`). Past
-  assistant turns replay at their recorded `ChatMessage.trust.integrity`;
-  turns with no record replay as untrusted (3). A CallSkill result replays on
-  ring 2 only when the turn recorded it on ring 2 (`ChatTrust.toolRings`)
-  and `ZEOS_TRUSTED_RESULTS` still names the call exactly (case-sensitive);
-  anything else replays on ring 3. The replay starts the job at integrity 3
-  (`import_history(start_integrity=3)`, `importStartIntegrity`) when any
-  stored turn recorded integrity 3, or a turn with no record holds a tool
-  result: a demotion is never forgotten. The model's own text is stored
-  escaped (`ModelTextEscaper`: Gemma tool tokens defanged, a zero-width
-  space after `→` / `←`), so a reply cannot spell a tool exchange that
-  `parseGemmaHistory` would read back. A demotion is saved with the message
-  (`onTrust`) as soon as it happens and on every exit (Stop, abort, error,
-  the call cap).
+  prompt, thinking, gate mode, tool-choice masking and prior messages. A new
+  chat, reload, retry, abort, the call cap or a restarted engine opens a
+  fresh run and replays history (`buildZeosImport`). Past assistant turns
+  replay at their recorded `ChatMessage.trust.integrity`; turns with no
+  record replay as untrusted (3). A CallSkill result replays on ring 2 only
+  when the turn recorded it on ring 2 (`ChatTrust.toolRings`) and
+  `ZEOS_TRUSTED_RESULTS` still names the call exactly (case-sensitive);
+  anything else replays on ring 3. The model's own text is stored escaped
+  (`ModelTextEscaper`: Gemma tool tokens defanged, a zero-width space after
+  `→` / `←`), so a reply cannot spell a tool exchange that
+  `parseGemmaHistory` would read back.
+- **A demotion is never forgotten.** It is saved with the message
+  (`onTrust`) as soon as it happens, and every exit saves the turn's trust
+  again: the reply, Stop, the call cap, an error, an engine crash or stall,
+  and `disposeZeos`. When a `step` batch is lost (Stop past the grace
+  period, a crash or dispose mid-step) its events were never read, so the
+  turn is saved as demoted if anything on ring 3 was in the run. A failed
+  turn's text is its error and is not replayed, but its demotion is
+  (`mapMessagesForLLM` keeps it as an empty turn with its trust). The replay
+  then starts the job at integrity 3 (`import_history(start_integrity=3)`,
+  `importStartIntegrity`) when any stored turn recorded integrity 3, or a
+  turn with no record holds a tool result.
 - **Approvals.** Each approval card has a page-unique id; `approve(id)` /
   `deny(id)` settle only that card. The card's buttons arm 400 ms after it
   appears and a double-click's second click is ignored, so a click meant for
-  one card cannot approve the next. The 10-call cap counts every call
-  (read, effect, refused by the kernel, or waiting for approval) and is
-  checked before the card.
+  one card cannot approve the next. When the engine dies or is unloaded
+  under a card, the card goes and the turn ends with that error, not a Deny
+  (the model is never told the user declined); a click on the old card,
+  or one meant for it that lands after a restart, settles nothing. The
+  10-call cap counts every call (read, effect, refused by the kernel, or
+  waiting for approval) and is checked before the card; it is per user
+  message, and nothing restarts the engine within one.
