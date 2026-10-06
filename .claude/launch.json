@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "site-local-models",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd site && PUBLIC_LOCAL_MODELS=1 npm run dev -- --port 4330"],
+      "port": 4330
+    }
+  ]
+}
