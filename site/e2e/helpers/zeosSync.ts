@@ -1,0 +1,29 @@
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { test as base } from '@playwright/test';
+
+/** Whether `npm run zeos:sync` has populated public/zeos (generated, gitignored). */
+export const ZEOS_SYNCED = fs.existsSync(
+  fileURLToPath(new URL('../../public/zeos/manifest.json', import.meta.url)),
+);
+
+/**
+ * Call inside a `test.describe` that needs the ZEOS wheels. With public/zeos
+ * missing the tests fail, saying how to fix it, instead of skipping where
+ * nobody looks; `GDA_E2E_SKIP_ZEOS=1` skips them on purpose (with that
+ * reason in the report).
+ */
+export function requireZeosSync(test: typeof base): void {
+  if (process.env.GDA_E2E_SKIP_ZEOS === '1') {
+    test.skip(true, 'GDA_E2E_SKIP_ZEOS=1: ZEOS e2e skipped on request');
+    return;
+  }
+  test.beforeEach(() => {
+    if (!ZEOS_SYNCED) {
+      throw new Error(
+        'public/zeos/manifest.json is missing: run `cd site && npm run zeos:sync` ' +
+          '(or set GDA_E2E_SKIP_ZEOS=1 to skip the ZEOS e2e tests on purpose).',
+      );
+    }
+  });
+}

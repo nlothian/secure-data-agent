@@ -12,7 +12,10 @@
  *
  * `RunSQL` is classified by its arguments: a `read_if` rule makes a call a
  * read only when its arguments are exactly `{sql}` and the SQL is a single
- * read-only statement. The SQL must therefore be inline, so this model gets a
+ * read-only statement that reaches no file, URL or extension (it runs with
+ * no approval, so it must not be a way to fetch or leak anything; see
+ * `SQL_EXTERNAL_WORDS`, and `dispatchForZeos`, which also runs it with
+ * DuckDB's extension autoloading off). The SQL must therefore be inline, so this model gets a
  * RunSQL spec with an `sql` parameter (`zeosAgentTools`); a call by `path`
  * cannot be inspected and is an effect.
  *
@@ -77,13 +80,46 @@ const READ_PRAGMAS = [
   'metadata_info',
 ] as const;
 
+/**
+ * Table functions and other bare words that reach files, the network or
+ * another database, as DuckDB names them: the `read_*` readers, `glob`,
+ * `sniff_csv`, every `*_scan` (several of which also autoload an extension
+ * over the network), the `parquet_*`, `iceberg_*`, `sqlite_*`, `postgres_*`
+ * and `mysql_*` families, `st_read`, `getenv`, and functions that run SQL
+ * from a value (`json_execute_serialized_sql`, `query_table`; `query` is a
+ * write keyword). A read-only query reads tables the
+ * app already loaded (LoadData), so it needs none of them; a column that
+ * happens to share one of these names makes the query an effect, which only
+ * asks the user.
+ */
+export const SQL_EXTERNAL_WORDS = [
+  'read_[A-Za-z0-9_]*', 'glob', 'sniff_csv', '[A-Za-z0-9_]*_scan',
+  '(?:parquet|iceberg|sqlite|postgres|mysql|st_read)_[A-Za-z0-9_]*', 'st_read',
+  'getenv', 'load_aws_credentials', 'json_execute_serialized_sql', 'query_table',
+] as const;
+
+/**
+ * Extensions a string or quoted identifier must not end with: DuckDB reads
+ * `FROM 'x.csv'` or `FROM "x.parquet"` as a file (a replacement scan), with
+ * an optional compression suffix.
+ */
+const SQL_FILE_SUFFIX =
+  '\\.(?:csv|tsv|tbl|txt|dat|parquet|json|jsonl|ndjson|geojson|xlsx|xls|arrow|ipc|feather|avro|orc|db|duckdb|sqlite|sqlite3)' +
+  '(?:\\.(?:gz|gzip|zst|zstd|bz2|xz|lz4|snappy|zip))?';
+
 // The lexical units of a statement, as DuckDB splits them. Anything this does
 // not recognise (a backslash, a `$`, an unterminated quote, a nested comment)
 // makes the statement fail to match, so it is an effect.
-/** A string literal, `''` escaping a quote. No backslash: in an `E'…'` string it escapes. */
-const SQL_STRING = "'(?:[^'\\\\]|'')*'";
-/** A quoted identifier, `""` escaping a quote. */
-const SQL_QUOTED_ID = '"(?:[^"]|"")*"';
+/**
+ * A string literal, `''` escaping a quote. No backslash: in an `E'…'` string
+ * it escapes. Not one that names a URL (`://` anywhere: `https://`, `s3://`,
+ * `hf://`, …) or a file DuckDB would read in its place.
+ */
+const SQL_STRING =
+  "'(?!(?:[^'\\\\]|'')*?://)(?!(?:[^'\\\\]|'')*" + SQL_FILE_SUFFIX + "'(?!'))(?:[^'\\\\]|'')*'";
+/** A quoted identifier, `""` escaping a quote; not a URL or a file name, as a string. */
+const SQL_QUOTED_ID =
+  '"(?!(?:[^"]|"")*?://)(?!(?:[^"]|"")*' + SQL_FILE_SUFFIX + '"(?!"))(?:[^"]|"")*"';
 /**
  * A line comment, which (as in DuckDB's Postgres lexer) ends at `\n` or `\r`.
  * It must run to that end: a shorter match would let the rest of the line
@@ -92,9 +128,9 @@ const SQL_QUOTED_ID = '"(?:[^"]|"")*"';
 const SQL_LINE_COMMENT = '--[^\\n\\r]*(?![^\\n\\r])';
 /** A block comment with no `/*` inside it (DuckDB may nest them; this never does). */
 const SQL_BLOCK_COMMENT = '/\\*(?:[^*/]|\\*(?!/)|/(?!\\*))*\\*/';
-/** A whole bare word (identifier, keyword or number) that is not a write keyword. */
+/** A whole bare word (identifier, keyword or number) that is not a write keyword or external access. */
 const SQL_WORD =
-  `${NOT_WORD_BEFORE}(?!(?:${SQL_WRITE_KEYWORDS.join('|')})${NOT_WORD_AFTER})` +
+  `${NOT_WORD_BEFORE}(?!(?:${[...SQL_WRITE_KEYWORDS, ...SQL_EXTERNAL_WORDS].join('|')})${NOT_WORD_AFTER})` +
   `[A-Za-z0-9_]+${NOT_WORD_AFTER}`;
 /** Any other character but `;`, a quote, `$` or a backslash; `-` and `/` when they open no comment. */
 const SQL_OTHER = '[^;\'"A-Za-z0-9_$\\\\/-]|-(?!-)|/(?!\\*)';
@@ -215,8 +251,9 @@ const RUN_SQL_ZEOS_NOTE =
   'With this model, pass the query inline as `sql` (one statement). A ' +
   'read-only query (SELECT, WITH, DESCRIBE, SHOW, EXPLAIN, SUMMARIZE, a ' +
   'reporting PRAGMA) given only as `sql` runs straight away; anything else, ' +
-  'or a query given by `path` or with `register_as`, waits for the user to ' +
-  'approve it once you have read tool output. ';
+  'or a query given by `path` or with `register_as`, or one that reads a file ' +
+  'or URL itself (read_csv, FROM \'x.csv\'), waits for the user to approve it ' +
+  'once you have read tool output. Query the loaded tables by name. ';
 
 /**
  * The agent's tool specs as this model sees them: RunSubAgent removed, and

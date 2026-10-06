@@ -11,7 +11,8 @@ import { defineConfig, devices } from '@playwright/test';
 // its own port and never reuses an existing server, so a stale dev server
 // started without the flag can never silently send it to the Hugging Face Hub.
 const LLM = process.env.GDA_E2E_LLM === '1';
-const PORT = LLM ? 4322 : 4321;
+// GDA_E2E_PORT moves the server, e.g. to run two worktrees' suites side by side.
+const PORT = Number(process.env.GDA_E2E_PORT) || (LLM ? 4322 : 4321);
 
 export default defineConfig({
   testDir: './e2e',
@@ -70,8 +71,8 @@ export default defineConfig({
         timeout: 60_000,
       }
     : {
-        command: 'npm run dev',
-        url: 'http://localhost:4321',
+        command: `npm run dev -- --port ${PORT}`,
+        url: `http://localhost:${PORT}`,
         reuseExistingServer: !process.env.CI,
         timeout: 60_000,
       },

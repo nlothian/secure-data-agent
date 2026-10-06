@@ -72,7 +72,7 @@ export interface InternalMessage {
  * ReadLines / RunPython stdout / RunSubAgent output) close a string early
  * and inject a synthetic tool call, turn, or thought channel.
  */
-const STRUCTURAL_DELIMITERS = [
+export const STRUCTURAL_DELIMITERS = [
   STRING_DELIM,
   TOOL_CALL_OPEN,
   TOOL_CALL_CLOSE,

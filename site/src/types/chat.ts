@@ -14,8 +14,8 @@ export interface ChatTrust {
   ring: number;
   /**
    * The ring each tool result of the turn arrived on, in order: 3, or 2 for a
-   * result the app wrote itself (a bundled skill card). History import keeps
-   * a result recorded at 3 on ring 3.
+   * result the app wrote itself (a bundled skill card). History import
+   * replays a result on ring 2 only when it is recorded here at 2.
    */
   toolRings?: number[];
   /** Indices into `toolRings` of results that spelled a kernel frame (ZEOS spoof alarm). */

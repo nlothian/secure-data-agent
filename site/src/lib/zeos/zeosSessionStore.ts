@@ -18,6 +18,15 @@ export interface ZeosApproval {
   effectiveIntegrity: number | null;
 }
 
+/**
+ * A call on the approval card. `id` is unique for the page's lifetime, so an
+ * answer meant for one card can never settle the next (a double-click on
+ * Approve must not approve a call whose arguments were never shown).
+ */
+export interface ZeosPendingApproval extends ZeosApproval {
+  id: number;
+}
+
 /** The kernel's spoof alarm: a delivery that spelled a kernel frame (inert data). */
 export interface ZeosSpoof {
   pipe: string | null;
@@ -47,7 +56,8 @@ export interface ZeosSnapshot {
   sessionFloor: number | null;
   /** e.g. "ReadLines result #3", or "an earlier assistant turn". */
   demotedBy: string | null;
-  pending: ZeosApproval | null;
+  /** The call waiting for the user, with the id Approve/Deny must name. */
+  pending: ZeosPendingApproval | null;
   /** Journal lines (JSON), newest last, capped. */
   journal: string[];
   /** Spoof alarms in this conversation, oldest first. */
@@ -77,6 +87,7 @@ const INITIAL: ZeosSnapshot = {
 let snapshot: ZeosSnapshot = INITIAL;
 const listeners = new Set<() => void>();
 let decide: ((approved: boolean) => void) | null = null;
+let nextApprovalId = 1;
 
 function set(patch: Partial<ZeosSnapshot>): void {
   snapshot = { ...snapshot, ...patch };
@@ -159,16 +170,18 @@ export function requestApproval(approval: ZeosApproval, signal?: AbortSignal): P
       set({ pending: null });
       resolve(approved);
     };
-    set({ pending: approval });
+    set({ pending: { ...approval, id: nextApprovalId++ } });
   });
 }
 
-export function approve(): void {
-  decide?.(true);
+/** Approve the call on the card with this `id`; an answer for any other card does nothing. */
+export function approve(id: number): void {
+  if (snapshot.pending?.id === id) decide?.(true);
 }
 
-export function deny(): void {
-  decide?.(false);
+/** Deny the call on the card with this `id`; an answer for any other card does nothing. */
+export function deny(id: number): void {
+  if (snapshot.pending?.id === id) decide?.(false);
 }
 
 /** Drop a pending approval without answering (the stream was torn down). */
