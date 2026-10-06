@@ -728,6 +728,19 @@ describe('streamZeos', () => {
     expect(engine.runs[0].log.filter((l) => l[0] === 'deliverRefusal').length).toBe(10);
   });
 
+  it('ends a turn at the call cap as demoted once a ring-3 result was delivered (N4)', async () => {
+    const read = (call: number): ZeosEvent[] => [
+      ...tokens(callText('ListInputs')),
+      { type: 'tool_call', call, name: 'ListInputs', arguments: {}, sink: 'tools.read', results: 'tools.results' },
+    ];
+    // No arrival or demotion events at all: the deliveries alone count.
+    await useEngine([Array.from({ length: 12 }, (_, i) => read(i))]);
+    const c = await send([{ role: 'user', content: 'go' }]).done;
+    expect(c.maxed).toBe(true);
+    expect(c.trust.at(-1)).toMatchObject({ integrity: 3, ring: 3 });
+    expect(c.trust.at(-1)?.demotedBy).toContain('cut short');
+  });
+
   it('saves a demotion with the message when Stop lands in the same batch (T5)', async () => {
     await useEngine([readThenEffect([])]);
     const ctrl = new AbortController();

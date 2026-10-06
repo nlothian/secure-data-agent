@@ -260,7 +260,11 @@ interface Outcome {
   trust: ChatTrust[];
 }
 
-function send(messages: StreamChatMessage[], signal?: AbortSignal): Promise<Outcome> {
+function send(
+  messages: StreamChatMessage[],
+  signal?: AbortSignal,
+  onEachToken?: (delta: string) => void,
+): Promise<Outcome> {
   const out: Outcome = { ui: '', history: '', done: false, error: null, trust: [] };
   return new Promise<Outcome>((resolve) => {
     void streamZeos({
@@ -271,6 +275,7 @@ function send(messages: StreamChatMessage[], signal?: AbortSignal): Promise<Outc
       signal,
       onToken: (d) => {
         out.ui += d;
+        onEachToken?.(d);
       },
       onHistoryDelta: (d) => {
         out.history += d;
@@ -415,6 +420,56 @@ describe('ZEOS engine lifecycle', () => {
     expect(engines[0].interrupted).toBe(1);
     expect(out.trust.at(-1)).toMatchObject({ integrity: 3, ring: 3, toolRings: [3] });
     expect(out.trust.at(-1)?.demotedBy).toContain('cut short');
+  });
+
+  it('Stop between steps after a ring-3 read saves the turn as demoted: the open block was never judged (N4)', async () => {
+    // The result arrived and was read, and a token followed, with no demotion
+    // yet: the kernel judges the open 16-step block only at its end or a write.
+    scripts = [
+      [[listInputs, [arrived, { type: 'token', text: 'Reading' }], [{ type: 'token', text: ' on' }], reply('never')]],
+    ];
+    const ctrl = new AbortController();
+    // Stop lands while the loop handles a batch, with no step in flight.
+    let ui = '';
+    const turn = send([{ role: 'user', content: 'list' }], ctrl.signal, (d) => {
+      ui += d;
+      if (ui.includes('Read')) ctrl.abort();
+    });
+    const out = await turn;
+    expect(out.done).toBe(true);
+    expect(out.ui).toContain('Read');
+    expect(out.ui).not.toContain('never');
+    expect(engines[0].interrupted).toBe(1);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, ring: 3, toolRings: [3] });
+    expect(out.trust.at(-1)?.demotedBy).toContain('cut short');
+  });
+
+  it('Stop during the first tool result\'s prefill saves the turn as demoted, though its arrival was never seen (N4)', async () => {
+    vi.useFakeTimers();
+    // ListInputs runs and its result is delivered; the step that takes it in hangs.
+    scripts = [[[listInputs, HANG]]];
+    const ctrl = new AbortController();
+    const turn = send([{ role: 'user', content: 'list' }], ctrl.signal);
+    await tick(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'));
+    expect(engines[0].runs[0].log).toContain('deliverToolResult');
+    ctrl.abort();
+    await vi.advanceTimersByTimeAsync(ZEOS_STOP_GRACE_MS);
+    const out = await turn;
+    expect(out.done).toBe(true);
+    expect(engines[0].interrupted).toBe(1);
+    // No arrival was seen, so no ring is recorded, but the delivery counts.
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, ring: 3, toolRings: [] });
+    expect(out.trust.at(-1)?.demotedBy).toContain('cut short');
+  });
+
+  it('Stop between steps with nothing untrusted delivered keeps the turn trusted', async () => {
+    scripts = [[[[{ type: 'token', text: 'Thinking' }], reply('never')]]];
+    const ctrl = new AbortController();
+    const out = await send([{ role: 'user', content: 'hi' }], ctrl.signal, (d) => {
+      if (d.includes('Thinking')) ctrl.abort();
+    });
+    expect(out.done).toBe(true);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 2 });
   });
 
   it('Stop: a kernel that does not settle within the watchdog is reset, and the next message waits for it', async () => {

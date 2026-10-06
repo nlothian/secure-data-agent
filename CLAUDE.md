@@ -342,13 +342,23 @@ one run holds the main chat.
   `sniff_csv`, `*_scan`, `parquet_*`, `sqlite_*`, `postgres_*`, …,
   `SQL_EXTERNAL_WORDS`) are effects, and so is a string or quoted
   identifier holding `://` or ending in a file extension (`FROM 'a.csv'`,
-  a replacement scan). Read-only queries query the tables LoadData loaded.
-  As a second layer `dispatchForZeos` runs a read-classified RunSQL with
-  DuckDB's `autoload_known_extensions` / `autoinstall_known_extensions` off
-  (`withoutExtensionAutoload` in `duckdb.ts`), then restores them. The
-  vitest checks every case, and each of the 36 write keywords (alone and
-  under `EXPLAIN ANALYZE`), against the wheel's own `_rule_matches` under
-  Python too (it imports the synced `.whl` files from `public/zeos`).
+  a replacement scan). DuckDB resolves a quoted name like a bare one
+  (`"glob"('*')`, `main."read_csv"(…)`, `"GETENV"('HOME')` all run), so a
+  quoted identifier followed (past whitespace and comments) by `(` is an
+  effect, and so is one whose whole name is a write keyword or external
+  word; `U&"…"` / `U&'…'` escapes (an `&` before a quote) are effects too.
+  Read-only queries query the tables LoadData loaded.
+  As a second layer `dispatchForZeos` runs every RunSQL the kernel put on
+  `tools.read` (keyed on the `tool_call` sink, never on re-classifying the
+  SQL in TypeScript) with DuckDB's `autoload_known_extensions` /
+  `autoinstall_known_extensions` off (`withoutExtensionAutoload` in
+  `duckdb.ts`), then restores them. The vitest checks every case, and each
+  of the 36 write keywords (alone and under `EXPLAIN ANALYZE`), against the
+  wheel's own `_rule_matches` under Python too (it imports the synced `.whl`
+  files from `public/zeos`). Python's IGNORECASE without `re.ASCII` matches
+  `ſ`, `K` (Kelvin), `İ` and `ı` against `[A-Za-z]` and `RegExp` does not,
+  so ZEOS compiles `read_if` with `re.ASCII`; a parity test checks those
+  four letters and fails against wheels synced from before that change.
 - **Spoof alarms and look-alikes.** The kernel raises a `spoof` event when a
   delivery spells a kernel frame tag (`<KERNEL>`, `<FAULT …>`, `<STATUS …>`,
   …) anywhere in a word, so a tag glued to the text before it (`1,"<KERNEL>`,
@@ -494,9 +504,15 @@ one run holds the main chat.
 - **A demotion is never forgotten.** It is saved with the message
   (`onTrust`) as soon as it happens, and every exit saves the turn's trust
   again: the reply, Stop, the call cap, an error, an engine crash or stall,
-  and `disposeZeos`. When a `step` batch is lost (Stop past the grace
-  period, a crash or dispose mid-step) its events were never read, so the
-  turn is saved as demoted if anything on ring 3 was in the run. A failed
+  and `disposeZeos`. Any exit but the reply (Stop, abort, an error, a
+  crash, a stall, a dispose, the call cap) saves the turn as demoted if
+  anything on ring 3 was in the run or delivered to it
+  (`assumeCutShortDemoted`): the kernel judges the open 16-step block's
+  attention only at its end or at a write, so the tokens decoded since were
+  streamed and stored unjudged, and a lost `step` batch's events were never
+  read. A reply needs none of this, since `<|im_end|>` is a write. A ring-3
+  result or refusal counts from its delivery, not only once its arrival is
+  seen, so a Stop during its prefill counts it too. A failed
   turn's text is its error and is not replayed, but its demotion is
   (`mapMessagesForLLM` keeps it as an empty turn with its trust). The replay
   then starts the job at integrity 3 (`import_history(start_integrity=3)`,

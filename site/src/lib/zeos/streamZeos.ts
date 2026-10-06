@@ -178,8 +178,9 @@ export const ZEOS_ABORT_WATCHDOG_MS = 10_000;
  * interrupts the kernel call. A decode batch (`STEP_TICKS` ticks, ~72 ms each
  * on an M1 Max) ends well within it, and its events are read as usual, so a
  * demotion in that batch is saved with the message. Only a long prefill is
- * cut short; then the batch's events are never seen, and the turn is saved as
- * demoted if anything untrusted was in the run (`assumeCutShortDemoted`).
+ * cut short; then the batch's events are never seen. Either way the turn
+ * ends early, so it is saved as demoted if anything untrusted was in the run
+ * (`assumeCutShortDemoted`).
  */
 export const ZEOS_STOP_GRACE_MS = 2_000;
 
@@ -202,7 +203,12 @@ interface Session {
   toolCount: number;
   integrity: number;
   demotedBy: string | null;
-  /** Something on ring 3 (a tool result, a replayed untrusted turn) is in the run, so a step could demote. */
+  /**
+   * Something on ring 3 (a tool result or refusal, a replayed untrusted turn)
+   * is in the run, or has been delivered to it, so a step could demote. Set
+   * on delivery, not only when the arrival is seen: a step that is cut short
+   * may have taken it in unseen.
+   */
   untrusted: boolean;
 }
 
@@ -621,8 +627,6 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   let live: { s: Session; text: ZeosTurnText } | null = null;
   /** A `step` call is waiting for the kernel. */
   let stepping = false;
-  /** A `step` call failed (Stop's interrupt, a crash, a dispose): the kernel may have run it unseen. */
-  let cutShort = false;
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const onStop = (): void => {
     if (!stepping) return interruptForStop();
@@ -713,6 +717,8 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       text.flushHeld();
       emit('\n\nReached max tool iterations');
       opts.onMaxIterationsReached?.();
+      // The turn ends early: its last steps' attention was never judged.
+      assumeCutShortDemoted(s);
       reportTrust(s);
       live = null;
       await dropSession();
@@ -743,7 +749,10 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       text.toolExchange(name, argsJson, resultStr);
       s.toolCount += 1;
       pendingResultLabel = `${name} result #${s.toolCount}`;
-      await s.run.deliverToolResult(toolResultForZeos(resultStr), isTrustedToolResult(name, args));
+      const trusted = isTrustedToolResult(name, args);
+      // Ring 3 from the moment it is handed over, before its arrival is seen.
+      if (!trusted) s.untrusted = true;
+      await s.run.deliverToolResult(toolResultForZeos(resultStr), trusted);
     };
 
     for (;;) {
@@ -752,9 +761,6 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       stepping = true;
       try {
         events = await s.run.step(STEP_TICKS);
-      } catch (err) {
-        cutShort = true;
-        throw err;
       } finally {
         stepping = false;
       }
@@ -834,6 +840,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
               text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
               s.toolCount += 1;
               pendingResultLabel = `${e.name} refusal #${s.toolCount}`;
+              s.untrusted = true;
               await s.run.deliverRefusal(ZEOS_REFUSAL);
             }
             break;
@@ -846,6 +853,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
             s.toolCount += 1;
             pendingResultLabel = `${e.name} refusal #${s.toolCount}`;
+            s.untrusted = true;
             await s.run.deliverRefusal(`The kernel refused this call (${e.fault}): ${e.detail}`);
             break;
           }
@@ -924,10 +932,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   } catch (err) {
     setLlmPreparingToolCall(null);
     // Stop, abort or error mid-turn: save what the turn knew of its trust
-    // (a demotion included) with whatever text it kept.
+    // (a demotion included) with whatever text it kept. The kernel judges a
+    // 16-step block's attention only at its end or at a write, so the tokens
+    // decoded since were streamed and stored unjudged: with anything
+    // untrusted in the run, the turn is saved as demoted (N4).
     if (live) {
       live.text.flushHeld();
-      if (cutShort) assumeCutShortDemoted(live.s);
+      assumeCutShortDemoted(live.s);
       reportTrust(live.s);
       live = null;
     }
@@ -947,16 +958,20 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
 }
 
 /**
- * A `step` batch the loop never saw the end of (Stop past the grace period, a
- * crash, a dispose) may have demoted the job: the kernel ran it, but its
- * events are gone. If anything untrusted was in the run, save the turn as
- * demoted rather than risk forgetting a demotion (T5); with nothing on ring 3
- * there was nothing to demote it.
+ * A turn that ends any way but its reply (Stop, abort, an error, a crash, a
+ * stall, a dispose, the call cap) may have been influenced by what it read
+ * without the kernel saying so: a `step` batch the loop never saw the end of
+ * may have demoted the job (its events are gone), and the kernel judges the
+ * attention of the open 16-step block only at its end or at a write, so the
+ * tokens decoded since were never judged. If anything untrusted was in the
+ * run, save the turn as demoted rather than risk storing influenced text as
+ * trusted (T5, N4); with nothing on ring 3 there was nothing to demote it. A
+ * reply needs none of this: `<|im_end|>` is a write, so the kernel judges it.
  */
 function assumeCutShortDemoted(s: Session): void {
   if (s.integrity >= EXTERNAL || !s.untrusted) return;
   s.integrity = EXTERNAL;
-  s.demotedBy = 'a model step that was cut short (its attention was never read)';
+  s.demotedBy = 'a turn that was cut short (its last steps were never judged)';
   if (session === s) store.setTrust({ integrity: s.integrity, demotedBy: s.demotedBy });
 }
 
