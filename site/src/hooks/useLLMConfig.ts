@@ -17,6 +17,14 @@ export function isLLMUnconfigured(config: LLMConfig, ready: boolean): boolean {
   return false;
 }
 
+/**
+ * True for a browser with no saved LLM config (a first visit), until anything
+ * is saved: `EMPTY_LLM_CONFIG` itself is only ever the snapshot then.
+ */
+export function isFirstVisitLLMConfig(config: LLMConfig): boolean {
+  return config === EMPTY_LLM_CONFIG;
+}
+
 type StoredLLMConfig = Omit<LLMConfig, 'models' | 'thinkingEnabled'> & {
   models?: Record<string, string>;
   thinkingEnabled?: Record<string, boolean>;

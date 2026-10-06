@@ -273,10 +273,17 @@ one run holds the main chat.
   ZEOS, so Safari gets it). A saved choice always wins. The rule reads
   `detectWebGpu()`'s cached result, so ModelSelector waits for that check
   before it saves the default into the config, and the boot-time eager load
-  waits for it before it resolves the id. A first visit (no config at all)
-  still has no model selected ("Choose model"), and the default is only ever
-  loaded at boot when already cached, as before: a model is downloaded only
-  after the size dialog or on a send.
+  waits for it before it resolves the id. A first visit (no saved config at
+  all) selects the local endpoint and this default by itself, where a local
+  model can run (WebGPU, or the ZEOS dev stub); without WebGPU it stays on
+  "Choose model". The default is only ever loaded at boot when already
+  cached, and a model is downloaded only after the size dialog: from the
+  picker, or on a send, which shows the same dialog ("Download" / "Cancel")
+  when the active model is not cached and its download was not agreed to in
+  this page load (`confirmDownload` in `useLocalGemmaSwitcher`,
+  `downloadConsent.ts`). Cancel puts the text back in the composer.
+  `e2e/firstVisitModel.spec.ts` covers both; the `llm` specs save an empty
+  config first so a first visit does not eager-load ZEOS under them.
 - **Selecting it.** It is listed in every build, production included.
   Outside local-models mode it downloads from the Hub repo
   `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` pinned at revision
