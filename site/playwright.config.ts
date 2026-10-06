@@ -73,7 +73,8 @@ export default defineConfig({
     : {
         command: `npm run dev -- --port ${PORT}`,
         url: `http://localhost:${PORT}`,
-        reuseExistingServer: !process.env.CI,
+        // Not on a GDA_E2E_PORT either: that port may be another worktree's server.
+        reuseExistingServer: !process.env.CI && !process.env.GDA_E2E_PORT,
         timeout: 60_000,
       },
 });

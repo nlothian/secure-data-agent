@@ -1,16 +1,11 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
+import { requireZeosSync } from './helpers/zeosSync';
 
 // ZEOS Qwen 4B's engine lifecycle on the scripted chat stub model thread (no
 // weights; see zeosChat.spec.ts): a kernel worker crash while idle, a model
 // thread crash while an approval card waits, model switching blocked while a
 // reply streams, and disposeZeos. Needs `npm run zeos:sync` and network for
 // jsDelivr (Pyodide).
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const manifest = path.resolve(here, '..', 'public', 'zeos', 'manifest.json');
 
 const LLM_CONFIG_STORAGE_KEY = 'haw.llm.config.v1';
 const LOCAL_GEMMA_ENDPOINT = 'local://gemma';
@@ -76,7 +71,7 @@ const APPROVAL_REPLIES = [
 ];
 
 test.describe('ZEOS Qwen 4B engine lifecycle (scripted stub model)', () => {
-  test.skip(!fs.existsSync(manifest), 'public/zeos/manifest.json missing; run `npm run zeos:sync`');
+  requireZeosSync(test);
   test.setTimeout(240_000);
 
   test('a kernel worker crash while idle is reported, and the next message restarts the engine', async ({
