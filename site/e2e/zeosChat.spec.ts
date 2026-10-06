@@ -337,6 +337,21 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await expect(
       lastAssistant(page).locator('.chat-tool-call', { hasText: 'CallSkill' }).locator('.chat-ring-badge'),
     ).toHaveText('ring 2');
+
+    // The next message replays the conversation into a fresh run: the card
+    // again on tools.results.trusted, which ZEOS allows only with its call
+    // (`name`, `arguments`) named by the trusted-results table; without them
+    // import_history raises and the turn ends in that error. (ZEOS
+    // `ChatRun.journal_lines` comes back empty after any step, so the dev
+    // journal cannot show the replay's pipes.)
+    await page.evaluate(
+      ([k, v]) => localStorage.setItem(k, v),
+      [STUB_KEY, JSON.stringify({ replies: ['Still here.'], attention: 'first' })],
+    );
+    await page.reload();
+    await send(page, 'Anything else?');
+    await expect(lastAssistant(page)).toContainText('Still here.', { timeout: 120_000 });
+    await expect(lastAssistant(page)).not.toContainText('trusted tool turn');
   });
 
   test('strict: a miscased skill name is not a bundled card, so it is ring 3 and the effect waits', async ({
