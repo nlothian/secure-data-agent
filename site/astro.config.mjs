@@ -4,6 +4,7 @@ import react from "@astrojs/react";
 import sourcecodePlugin from "./scripts/sourcecode-vite-plugin.mjs";
 import localModelsPlugin from "./scripts/local-models-vite-plugin.mjs";
 import ortWasmCdnPlugin from "./scripts/ort-wasm-cdn-vite-plugin.mjs";
+import zeosRuntimeCheckPlugin from "./scripts/zeos-runtime-check-vite-plugin.mjs";
 
 export default defineConfig({
   integrations: [mdx(), react()],
@@ -35,7 +36,9 @@ export default defineConfig({
     // localModelsPlugin is a no-op unless PUBLIC_LOCAL_MODELS=1 (dev/e2e only).
     // ortWasmCdnPlugin is build-only: ORT's wasm comes from jsDelivr, since
     // the file is over Cloudflare Pages' 25 MiB limit.
-    plugins: [sourcecodePlugin(), localModelsPlugin(), ortWasmCdnPlugin()],
+    // zeosRuntimeCheckPlugin (build only) fails the build without the
+    // committed ZEOS runtime in public/zeos/.
+    plugins: [sourcecodePlugin(), localModelsPlugin(), ortWasmCdnPlugin(), zeosRuntimeCheckPlugin()],
     server: {
       cors: true,
     },
