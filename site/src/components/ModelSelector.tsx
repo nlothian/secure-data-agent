@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import useLLMConfig from '../hooks/useLLMConfig';
 import useLocalGemmaSwitcher from '../hooks/useLocalGemmaSwitcher';
+import useModelSwitchBlocked from '../hooks/useModelSwitchBlocked';
 import {
   DEFAULT_LOCAL_GEMMA_ID,
   formatGB,
@@ -24,6 +25,7 @@ export default function ModelSelector({
   const { config, ready, setModel, setThinkingEnabled, setZeosAttentionOnly, setZeosMaskToolChoice } =
     useLLMConfig();
   const modelSwitcher = useLocalGemmaSwitcher({ loadOnApply: true });
+  const switchBlocked = useModelSwitchBlocked();
 
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<WebGpuStatus | null>(null);
@@ -57,6 +59,11 @@ export default function ModelSelector({
       document.removeEventListener('keydown', onKey);
     };
   }, [modelMenuOpen]);
+
+  // A reply started streaming: close the menu (its options are refused now).
+  useEffect(() => {
+    if (switchBlocked) setModelMenuOpen(false);
+  }, [switchBlocked]);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,14 +116,15 @@ export default function ModelSelector({
           data-tour-id="chat.modelDropdown"
           onClick={() => setModelMenuOpen((v) => !v)}
           title={
-            webGpuSupported
-              ? 'Choose local model'
-              : webGpuReason ?? 'WebGPU is unavailable.'
+            !webGpuSupported
+              ? webGpuReason ?? 'WebGPU is unavailable.'
+              : switchBlocked ?? 'Choose local model'
           }
           aria-label="Choose local model"
           aria-haspopup="menu"
           aria-expanded={modelMenuOpen}
-          disabled={!webGpuSupported}
+          disabled={!webGpuSupported || switchBlocked !== null}
+          data-switch-blocked={switchBlocked !== null ? 'true' : undefined}
         >
           <ChevronDownIcon size={12} />
         </button>

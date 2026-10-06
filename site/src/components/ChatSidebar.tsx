@@ -62,6 +62,11 @@ import {
   StopIcon,
 } from './Icons';
 import ModelSelector from './ModelSelector';
+import {
+  activeLocalModel,
+  beginModelStream,
+  releaseUnusedEngines,
+} from '../lib/localLlm/engineLifecycle';
 import Throbber from './Throbber';
 import MessagesView from './MessagesView';
 import { ZeosApprovalCard, ZeosJournalView, ZeosTrustIndicator } from './ZeosPanels';
@@ -245,6 +250,19 @@ export default function ChatSidebar() {
     };
   }, [cfgReady, config.activeEndpoint, config.models]);
 
+  // Free the engine the chat's model does not use (the ZEOS workers when
+  // switching away from ZEOS Qwen 4B; the transformers.js model when switching
+  // to it), whichever control changed the model.
+  const activeLocalId =
+    config.activeEndpoint === LOCAL_GEMMA_ENDPOINT ? config.models[LOCAL_GEMMA_ENDPOINT] : null;
+  useEffect(() => {
+    if (!cfgReady) return;
+    void releaseUnusedEngines(activeLocalModel(config)).catch((err) =>
+      console.error('Failed to unload the previous model:', err),
+    );
+    // Only the model choice matters, not the rest of the config.
+  }, [cfgReady, config.activeEndpoint, activeLocalId]);
+
   // Track whether the user is pinned near the bottom before each render.
   useEffect(() => {
     const el = listRef.current;
@@ -423,6 +441,8 @@ export default function ChatSidebar() {
         parentMessages: history.messages,
       });
 
+      // The model cannot be switched (and its engine unloaded) under this turn.
+      const endModelStream = beginModelStream('the chat reply');
       await streamChat({
         config,
         messages: requestMessages,
@@ -525,7 +545,7 @@ export default function ChatSidebar() {
           setLastAssistantContent(err.message || 'Request failed.', true);
           flush();
         },
-      });
+      }).finally(endModelStream);
     },
     [
       appendLastAssistantHistory,

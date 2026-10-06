@@ -120,7 +120,28 @@ export interface ZeosChatEngine {
   backend: string;
   stub: boolean;
   open(opts: ZeosChatOpenOptions): Promise<ZeosChatRun>;
+  /** Terminate the kernel worker and the model thread (frees the model's GPU memory). Idempotent. */
+  dispose?(reason?: Error): void;
+  /** `listener` runs once when the engine dies: a crash, a fatal call, or `dispose`. */
+  onDispose?(listener: (reason: Error) => void): () => void;
+  /** Reject every call still waiting for its reply, now (Stop); the calls run on. */
+  interrupt?(reason: Error): void;
+  /** Resolves once every call sent before it has finished. */
+  ping?(): Promise<void>;
 }
+
+/**
+ * How long one synchronous model call may block the kernel before the
+ * channel gives up (ZEOS `SyncModelWorker` `timeoutMs`; its default is 600 s).
+ * The longest legitimate call is one prefill: the first turn's ~6.8k-token
+ * prompt takes ~33 s on an M1 Max (~210 tok/s), and one `decodeStep` may
+ * carry all of it. 180 s leaves ~5x that, room for a slower GPU or a longer
+ * replayed history (a 16k-token replay is ~80 s at that rate), while a wedged
+ * model thread is reported in 3 minutes instead of 10. A timeout disposes the
+ * engine (`isFatalKernelError`), so the next message starts a fresh one.
+ * Stop does not wait for it: `interrupt` rejects the pending call at once.
+ */
+export const ZEOS_MODEL_CALL_TIMEOUT_MS = 180_000;
 
 class KernelChatRun implements ZeosChatRun {
   constructor(
@@ -187,6 +208,8 @@ class KernelChatRun implements ZeosChatRun {
 export interface StartEngineHooks {
   onStatus?: (text: string) => void;
   onProgress?: (progress: Record<string, unknown>) => void;
+  /** Aborting stops the start and terminates both workers (`disposeZeos` mid-start). */
+  signal?: AbortSignal;
 }
 
 /** Boot the kernel worker and the model thread for `model`, in parallel. */
@@ -216,6 +239,7 @@ export async function startKernelChatEngine(
   let started;
   try {
     started = await startZeos({
+      signal: hooks.signal,
       onStatus: hooks.onStatus,
       onLog: (stream, text) => {
         if (stream === 'stderr') console.warn('[zeos]', text);
@@ -228,6 +252,7 @@ export async function startKernelChatEngine(
           hooks.onProgress?.(p);
         },
         onActivity: import.meta.env.DEV ? recordActivity : undefined,
+        timeoutMs: ZEOS_MODEL_CALL_TIMEOUT_MS,
       },
     });
   } finally {
@@ -240,10 +265,22 @@ export async function startKernelChatEngine(
     (globalThis as { __zeosKernel?: ZeosKernel }).__zeosKernel = kernel;
   }
   const probe = import.meta.env.DEV && attentionProbeEnabled();
-  if (probe) await installAttentionProbe(kernel);
+  try {
+    if (probe) await installAttentionProbe(kernel);
+    if (hooks.signal?.aborted) throw hooks.signal.reason ?? new DOMException('Aborted', 'AbortError');
+  } catch (err) {
+    kernel.dispose(err instanceof Error ? err : new Error(String(err)));
+    throw err;
+  }
   return {
     backend: attached.backend,
     stub: thread.stub,
+    dispose: (reason) => kernel.dispose(reason),
+    onDispose: (listener) => kernel.onDispose(listener),
+    interrupt: (reason) => kernel.interrupt(reason),
+    ping: async () => {
+      await kernel.exec('None');
+    },
     async open(opts) {
       const sampling = opts.sampling
         ? await kernel.call<ZeosHandle>('zeos_coop_count_web.chat_machine', 'Sampling', [], {
@@ -251,24 +288,29 @@ export async function startKernelChatEngine(
             top_k: opts.sampling.topK,
           })
         : null;
-      const run = await kernel.call<ZeosHandle>(
-        'zeos_coop_count_web.chat',
-        'open_chat',
-        [modelRef(attached.name)],
-        {
-          tool_classes: opts.toolClasses,
-          system_prompt: opts.systemPrompt,
-          thinking: opts.thinking,
-          param_types: opts.paramTypes,
-          gate_mode: opts.gateMode,
-          ...(opts.trustedResults ? { trusted_results: opts.trustedResults } : {}),
-          ...(sampling ? { sampling } : {}),
-          ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
-          ...(opts.thetaRead !== undefined ? { theta_read: opts.thetaRead } : {}),
-          ...(opts.maskToolChoice ? { mask_tool_choice: true } : {}),
-        },
-      );
-      if (sampling) await kernel.release(sampling).catch(() => undefined);
+      let run: ZeosHandle;
+      try {
+        run = await kernel.call<ZeosHandle>(
+          'zeos_coop_count_web.chat',
+          'open_chat',
+          [modelRef(attached.name)],
+          {
+            tool_classes: opts.toolClasses,
+            system_prompt: opts.systemPrompt,
+            thinking: opts.thinking,
+            param_types: opts.paramTypes,
+            gate_mode: opts.gateMode,
+            ...(opts.trustedResults ? { trusted_results: opts.trustedResults } : {}),
+            ...(sampling ? { sampling } : {}),
+            ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+            ...(opts.thetaRead !== undefined ? { theta_read: opts.thetaRead } : {}),
+            ...(opts.maskToolChoice ? { mask_tool_choice: true } : {}),
+          },
+        );
+      } finally {
+        // Released on an open_chat error too.
+        if (sampling) await kernel.release(sampling).catch(() => undefined);
+      }
       if (probe) await kernel.call('_zeos_attention_probe', 'attach', [run]);
       return new KernelChatRun(kernel, run);
     },

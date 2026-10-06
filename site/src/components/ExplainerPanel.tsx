@@ -49,6 +49,8 @@ import type { ChatMessage } from '../types/chat';
 import explainerConversationSystemPrompt from '../prompts/explainerConversationSystemPrompt.md?raw';
 import { EXPLAINER_TOOLS, runExplainerTool } from '../lib/explainerTools';
 import { registerExplainerBridge } from '../lib/tour/bridge';
+import { sideTaskConfig } from '../lib/localLlm/models';
+import { beginModelStream } from '../lib/localLlm/engineLifecycle';
 
 const MAX_STREAMING_CONVERSATIONS = 10;
 
@@ -123,9 +125,11 @@ export default function ExplainerPanel() {
 
     let rawAssistantText = '';
 
+    // Side-task model: never the main chat's ZEOS session (see sideTaskConfig).
+    const endModelStream = beginModelStream('the Explainer reply');
     try {
       await streamChat({
-        config,
+        config: sideTaskConfig(config),
         messages: requestMessages,
         tools: EXPLAINER_TOOLS,
         toolDispatcher: runExplainerTool,
@@ -158,6 +162,7 @@ export default function ExplainerPanel() {
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      endModelStream();
       conversationAbortsRef.current.delete(entryId);
     }
   }

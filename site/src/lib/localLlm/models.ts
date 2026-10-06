@@ -125,6 +125,21 @@ export function transformersModelIdFor(id: string): string {
   return ALL_LOCAL_MODELS.find((m) => m.id === id)?.sideTaskModelId ?? id;
 }
 
+/**
+ * `config` for a side task (the Explainer's conversation): with the local
+ * endpoint's model replaced by its `sideTaskModelId`, so a side task never
+ * runs on ZEOS Qwen 4B. That model's kernel holds one conversation (the main
+ * chat's); sharing it would close the chat's run, force a ~30 s re-prefill
+ * on its next message, and could answer its pending approval. Any other
+ * config is returned unchanged.
+ */
+export function sideTaskConfig(config: LLMConfig): LLMConfig {
+  if (config.activeEndpoint !== LOCAL_GEMMA_ENDPOINT) return config;
+  const active = getLocalGemmaModel(resolveActiveLocalModelIdOrDefault(config));
+  if (!active?.sideTaskModelId) return config;
+  return { ...config, models: { ...config.models, [LOCAL_GEMMA_ENDPOINT]: active.sideTaskModelId } };
+}
+
 export const DEFAULT_LOCAL_GEMMA_ID: LocalGemmaId = 'gemma-4-e2b';
 
 export function isLocalGemmaId(id: unknown): id is LocalGemmaId {

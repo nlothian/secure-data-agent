@@ -2,8 +2,11 @@
 /**
  * Pull what the browser ZEOS kernel needs out of a ZEOS checkout.
  *
- *   npm run zeos:sync                       # ZEOS_REPO defaults below
  *   ZEOS_REPO=/path/to/zeos npm run zeos:sync
+ *
+ * `ZEOS_REPO` is required: there is no default checkout, because building
+ * the wrong one (a checkout with someone else's uncommitted edits, or a stale
+ * branch) is silent. CLAUDE.md names the checkout to sync from.
  *
  * 1. `uv build --wheel` for the `zeos` and `zeos-coop-count-web` packages,
  *    copied to `public/zeos/wheels/<sha256[0:12]>/<wheel>`. The directory is
@@ -13,9 +16,12 @@
  *    `public/zeos/cases/<case>/`.
  * 3. The JavaScript modules the site imports, copied into
  *    `src/lib/zeos/vendor/` with a header naming the source commit.
- * 4. `public/zeos/manifest.json`: wheel paths + sha256, case file lists, the
- *    ZEOS checkout path, its origin remote, commit, and whether its tree was
- *    dirty. `src/lib/zeos/vendor/SOURCE.json` records the same source.
+ * 4. `public/zeos/manifest.json`: wheel paths + sha256 (the kernel worker
+ *    checks each wheel against it before installing), case file lists, and
+ *    the ZEOS origin remote, branch, commit, and whether its tree was dirty.
+ *    It is served with the site, so it holds no local paths.
+ *    `src/lib/zeos/vendor/SOURCE.json` (committed, not served) also records
+ *    the checkout path that was synced.
  *
  * `public/zeos/` is generated and gitignored; `src/lib/zeos/vendor/` is
  * committed (see CLAUDE.md).
@@ -29,10 +35,15 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const siteRoot = path.resolve(__dirname, '..');
-const zeosRepo = path.resolve(
-  process.env.ZEOS_REPO ??
-    '/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers',
-);
+if (!process.env.ZEOS_REPO) {
+  console.error(
+    'Set ZEOS_REPO to the ZEOS checkout to build from, e.g.\n' +
+      '  ZEOS_REPO=/path/to/zeos npm run zeos:sync\n' +
+      '(CLAUDE.md, "ZEOS kernel (browser)", names the checkout this site runs.)',
+  );
+  process.exit(1);
+}
+const zeosRepo = path.resolve(process.env.ZEOS_REPO);
 const publicOut = path.join(siteRoot, 'public', 'zeos');
 const vendorOut = path.join(siteRoot, 'src', 'lib', 'zeos', 'vendor');
 
@@ -163,7 +174,8 @@ fs.writeFileSync(
 
 // 4. manifest
 const manifest = {
-  zeos: { repo: zeosRepo, remote, branch, commit, dirty: dirty.length > 0 },
+  // No `repo`: this file is served, and a local path means nothing to a visitor.
+  zeos: { remote, branch, commit, dirty: dirty.length > 0 },
   wheels,
   cases,
 };

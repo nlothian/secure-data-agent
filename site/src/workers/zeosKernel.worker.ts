@@ -24,11 +24,13 @@
 import { SyncModelWorker } from '../lib/zeos/vendor/model_channel.js';
 import RPC_SOURCE from '../lib/zeos/zeos_rpc.py?raw';
 import type { KernelMessage, KernelRequest } from '../lib/zeos/protocol';
+import { verifySha256 } from '../lib/zeos/verifySha256';
 
 const PYODIDE_VERSION = '314.0.7';
 const PYODIDE_INDEX_URL = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 const CASES_DIR = '/zeos/cases';
 const RPC_DIR = '/zeos/py';
+const WHEELS_DIR = '/zeos/wheels';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -92,10 +94,26 @@ async function boot(manifestUrl: string) {
   py.setStderr({ batched: (text) => post({ type: 'log', stream: 'stderr', text }) });
 
   post({ type: 'status', text: 'installing the ZEOS wheels' });
+  // Each wheel is checked against the manifest's sha256 before it is
+  // installed, from the verified bytes in Pyodide's FS (micropip `emfs:`), so
+  // what runs is exactly what `zeos:sync` built.
+  const wheelBytes = await Promise.all(
+    manifest.wheels.map(async (w) => {
+      const url = new URL(w.path, manifestUrl).href;
+      const bytes = await fetchBytes(url);
+      await verifySha256(bytes, w.sha256, w.name);
+      return bytes;
+    }),
+  );
+  py.FS.mkdirTree(WHEELS_DIR);
+  const wheelPaths = manifest.wheels.map((w, i) => {
+    const target = `${WHEELS_DIR}/${w.name}`;
+    py.FS.writeFile(target, wheelBytes[i]);
+    return `emfs:${target}`;
+  });
   await py.loadPackage('micropip');
   const micropip = py.pyimport('micropip');
-  const wheelUrls = manifest.wheels.map((w) => new URL(w.path, manifestUrl).href);
-  await micropip.install(wheelUrls);
+  await micropip.install(wheelPaths);
   micropip.destroy?.();
 
   post({ type: 'status', text: 'writing the ZEOS cases' });
