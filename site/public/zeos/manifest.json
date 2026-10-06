@@ -1,16 +1,16 @@
 {
   "zeos": {
     "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
-    "branch": "main",
-    "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
+    "branch": "fix/chat-spoof-notice",
+    "commit": "38ab62f04dfaa7791a30cc630525157190b20c5c",
     "dirty": false
   },
   "wheels": [
     {
       "name": "zeos-0.1.0-py3-none-any.whl",
-      "path": "wheels/4c49e8e37831/zeos-0.1.0-py3-none-any.whl",
-      "sha256": "4c49e8e37831078a9a61c7b4827f3fed947173cecc8979e81af0778c9e2afd0a",
-      "bytes": 325741
+      "path": "wheels/a9af37e45668/zeos-0.1.0-py3-none-any.whl",
+      "sha256": "a9af37e45668b69b6ec0b9ecc19e551f7e57592e9a02cd769d3250d4d9ce7e8e",
+      "bytes": 326076
     },
     {
       "name": "zeos_browser-0.1.0-py3-none-any.whl",
@@ -20,9 +20,9 @@
     },
     {
       "name": "zeos_chat-0.1.0-py3-none-any.whl",
-      "path": "wheels/2fe9998c97e5/zeos_chat-0.1.0-py3-none-any.whl",
-      "sha256": "2fe9998c97e55114f9699e279379e92447d8e4b7c5585842117be0c7db6f11fe",
-      "bytes": 41579
+      "path": "wheels/e9e71230c994/zeos_chat-0.1.0-py3-none-any.whl",
+      "sha256": "e9e71230c99416d1f4a628e588a9c0d69393756008a844244e21c246fd15edf9",
+      "bytes": 41858
     }
   ],
   "cases": {

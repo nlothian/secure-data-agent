@@ -1,8 +1,8 @@
 {
-  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos",
+  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-spoof-notice",
   "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
-  "branch": "main",
-  "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
+  "branch": "fix/chat-spoof-notice",
+  "commit": "38ab62f04dfaa7791a30cc630525157190b20c5c",
   "dirty": false,
   "files": {
     "frames.js": "633ba7c653e4e80ff9b4a963a936cd72193ed2f2ea89ea7d830ed414f76dea3f",
