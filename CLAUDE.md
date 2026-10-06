@@ -102,9 +102,9 @@ converts stored history on the way in.
    to disappear. The chat textarea becomes enabled when the model is ready.
 
 `npm run test:llm_tests` starts its own dev server on :4322 with
-`PUBLIC_LOCAL_MODELS=1` (it never reuses an existing server). It skips
-unless every required file for the chosen model is present with the right
-size. It defaults to E4B; set `GDA_E2E_MODEL=gemma-4-e2b` to use E2B, or
+`PUBLIC_LOCAL_MODELS=1` (it never reuses an existing server). Its model
+specs skip unless every required file for the chosen model is present with
+the right size; `e2e/llm/modelDropdown.spec.ts` needs only WebGPU. It defaults to E4B; set `GDA_E2E_MODEL=gemma-4-e2b` to use E2B, or
 `GDA_E2E_MODEL=qwen3.5-4b` for Qwen, or `GDA_E2E_MODEL=zeos-qwen3.5-4b` for
 ZEOS Qwen 4B (see below).
 
@@ -117,6 +117,34 @@ const s = await import('/src/lib/tour/stages/index.ts');
 const stage = s.DEFAULT_TOUR.stages.find((x) => x.id === '<stage-id>');
 c.startTour({ id: 'jump', stages: [stage] });
 ```
+
+## E2E tests
+
+`cd site && npm run test:e2e` runs the whole Playwright smoke suite
+(`--project=chromium`; the real-model `e2e/llm/` specs are
+`test:llm_tests`). `npm run test:e2e:fast` leaves out the tests tagged
+`@slow` (most of `zeosChat`, all of `zeosLifecycle`) or `@network` (the gist
+CSV in `remoteLoadData`). Run the fast tier after each change, and the full
+suite once before you finish.
+
+- Specs import `test` / `expect` from `e2e/fixtures.ts`, not
+  `@playwright/test`. Its auto fixture serves `cdn.jsdelivr.net` (DuckDB-wasm,
+  Pyodide) from a cache: in memory per worker, and on disk under
+  `site/node_modules/.cache/e2e-cdn/` across runs. Delete that directory to
+  clear it.
+- Environment:
+  - `GDA_E2E_WORKERS`: parallel workers (default 4; the `llm` project always
+    uses 1, since its tests share the GPU).
+  - `GDA_E2E_PORT`: the dev server's port (default 4321), e.g. to run two
+    worktrees' suites side by side. On a set port an existing server is
+    never reused.
+  - `GDA_E2E_CDN_CACHE=0`: no CDN cache; every test downloads from jsDelivr.
+- Never edit files in the worktree while an e2e run is in progress. Vite
+  hot-reloads the change into the running tests, and they fail in ways
+  that have nothing to do with the change.
+- When a run fails, rerun only the failures (`npx playwright test
+  --project=chromium --last-failed`, or `-g '<title>'`) until they pass,
+  then do the final full run.
 
 ## Cross-origin isolation (COOP/COEP)
 
