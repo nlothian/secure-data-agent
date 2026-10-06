@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/transformers_worker.js
-// at ddbe6620460cfc3c975b2e68963dc80176609457 by site/scripts/zeos-sync.mjs.
+// at 7149bfc5e8f7fdc96a0ad7b8cce22c204a4a38f5 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -60,6 +60,39 @@ export function encodePlain(tokenizer, text) {
     ids[i] = id;
   }
   return ids;
+}
+
+/** Each byte of GPT-2's byte-level alphabet, by the character a byte-level BPE vocabulary
+ * writes it as: printable Latin-1 as itself, every other byte shifted past 255. */
+const BYTE_OF_CHAR = (() => {
+  const bytes = [];
+  for (let b = 0x21; b <= 0x7e; b++) bytes.push(b);
+  for (let b = 0xa1; b <= 0xac; b++) bytes.push(b);
+  for (let b = 0xae; b <= 0xff; b++) bytes.push(b);
+  const chars = bytes.slice();
+  let shifted = 0;
+  for (let b = 0; b < 256; b++) {
+    if (!bytes.includes(b)) {
+      bytes.push(b);
+      chars.push(256 + shifted++);
+    }
+  }
+  return new Map(bytes.map((b, i) => [String.fromCharCode(chars[i]), b]));
+})();
+
+/** The bytes a byte-level BPE token stands for. A token that is part of a character (a
+ * byte of an emoji, say) decodes to U+FFFD on its own; these are its real bytes, which
+ * the Python side joins across a turn so a character split over tokens comes out whole. */
+export function pieceBytes(tokenizer, tokenId) {
+  const token = tokenizer.id_to_token(tokenId);
+  if (token === undefined) throw new RangeError(`token id ${tokenId} is outside the vocabulary`);
+  const out = new Uint8Array(token.length);
+  for (let i = 0; i < token.length; i++) {
+    const byte = BYTE_OF_CHAR.get(token[i]);
+    if (byte === undefined) throw new Error(`token ${tokenId} is not a byte-level token`);
+    out[i] = byte;
+  }
+  return out;
 }
 
 /** The seeded sampler `opts.sample` asks for, as `chat_machine.sample_index` defines it:
@@ -240,6 +273,10 @@ export class TransformersWorker {
       this.pieces.set(tokenId, text);
     }
     return text;
+  }
+
+  pieceBytes(tokenId) {
+    return pieceBytes(this.tokenizer, tokenId);
   }
 
   createContext(jobId) {

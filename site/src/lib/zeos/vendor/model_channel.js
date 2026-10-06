@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/model_channel.js
-// at ddbe6620460cfc3c975b2e68963dc80176609457 by site/scripts/zeos-sync.mjs.
+// at 7149bfc5e8f7fdc96a0ad7b8cce22c204a4a38f5 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -21,14 +21,18 @@
  * thread but not on a browser's main thread, which is why Pyodide runs in a worker in the
  * page; SharedArrayBuffer needs a cross-origin isolated page (see `coi.js`).
  *
- * Layout of the buffer: int32 slot 0 is the state (0 idle, 1 waiting, 2 answered), slot 1
- * the reply's length in bytes; the reply frame (`frames.js`) starts at byte 16.
+ * Layout of the buffer: int32 slot 1 is the reply's length in bytes and slot 2 the id of
+ * the request it answers; the reply frame (`frames.js`) starts at byte 16. The caller
+ * waits for slot 2 to name its own request, not merely to change: a call that timed out
+ * is still answered later, and that late reply must not be taken as the next call's.
+ * The model thread answers requests in the order they came, so once a call's own reply
+ * is there, every earlier one has been written and nothing overwrites it before the
+ * caller sends again.
  */
 
 import { decodeFrame, encodeFrame, serveRequest } from "./frames.js";
 
-const IDLE = 0;
-const WAITING = 1;
+const LENGTH = 1;
 const ANSWERED = 2;
 const DATA = 16;
 export const CHANNEL_BYTES = 32 << 20;
@@ -49,9 +53,9 @@ export function serveChannel(worker, buffer, onMessage) {
         });
       }
       bytes.set(frame, DATA);
-      Atomics.store(state, 1, frame.byteLength);
-      Atomics.store(state, 0, ANSWERED);
-      Atomics.notify(state, 0);
+      Atomics.store(state, LENGTH, frame.byteLength);
+      Atomics.store(state, ANSWERED, request.id);
+      Atomics.notify(state, ANSWERED);
     });
   });
 }
@@ -69,7 +73,9 @@ export class SyncModelWorker {
     this.bytes = new Uint8Array(buffer);
     this.post = post;
     this.timeoutMs = timeoutMs;
-    this.next = 0;
+    // Never the id slot 2 already holds, or the first call would take that reply as
+    // its own.
+    this.next = (Atomics.load(this.state, ANSWERED) + 1) | 0;
     this.cachedInfo = null;
     // `JsMachine` asks for every piece once at start-up; one call fetches them all.
     this.pieces = this.call("pieces");
@@ -77,15 +83,22 @@ export class SyncModelWorker {
   }
 
   call(method, ...args) {
-    Atomics.store(this.state, 0, WAITING);
-    this.post({ id: this.next++, method, args });
-    const outcome = Atomics.wait(this.state, 0, WAITING, this.timeoutMs);
-    if (outcome === "timed-out") {
-      throw new Error(`model worker did not answer ${method} within ${this.timeoutMs} ms`);
+    const id = this.next;
+    this.next = (id + 1) | 0;
+    this.post({ id, method, args });
+    const deadline = Date.now() + this.timeoutMs;
+    for (;;) {
+      const answered = Atomics.load(this.state, ANSWERED);
+      if (answered === id) break;
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        throw new Error(`model worker did not answer ${method} within ${this.timeoutMs} ms`);
+      }
+      Atomics.wait(this.state, ANSWERED, answered, left);
     }
-    const length = Atomics.load(this.state, 1);
+    const length = Atomics.load(this.state, LENGTH);
     const reply = decodeFrame(this.bytes.slice(DATA, DATA + length));
-    Atomics.store(this.state, 0, IDLE);
+    if (reply.id !== id) throw new Error(`model worker answered request ${reply.id} as ${id}`);
     if (!reply.ok) throw new Error(`model worker ${method}: ${reply.error}`);
     return reply.value;
   }
@@ -104,6 +117,14 @@ export class SyncModelWorker {
       throw new RangeError(`token id ${tokenId} is outside the vocabulary`);
     }
     return this.pieces[tokenId];
+  }
+
+  /** Fetched for every partial piece at once on the first call; see `frames.js`. */
+  pieceBytes(tokenId) {
+    if (this.partial === undefined) this.partial = new Map(this.call("partialPieces"));
+    const bytes = this.partial.get(tokenId);
+    if (bytes === undefined) throw new RangeError(`token id ${tokenId} is whole characters`);
+    return bytes;
   }
 
   createContext(jobId) {

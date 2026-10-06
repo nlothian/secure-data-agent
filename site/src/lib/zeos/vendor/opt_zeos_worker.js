@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/opt_zeos_worker.js
-// at ddbe6620460cfc3c975b2e68963dc80176609457 by site/scripts/zeos-sync.mjs.
+// at 7149bfc5e8f7fdc96a0ad7b8cce22c204a4a38f5 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -15,14 +15,15 @@
  * them against the cache.
  *
  * Like `TransformersWorker` it owns token ids and caches and nothing else, imports
- * nothing but `encodePlain` and `sampleToken` (ONNX Runtime and the tokenizer class are
- * handed in), and returns promises from `append` and `decodeStep`; `SyncModelWorker` in
- * `model_channel.js` makes it synchronous for the Python side.
+ * nothing but `encodePlain`, `pieceBytes` and `sampleToken` (ONNX Runtime and the
+ * tokenizer class are handed in), and returns promises from `append` and `decodeStep`;
+ * `SyncModelWorker` in `model_channel.js` makes it synchronous for the Python side.
  *
  * **Pending tokens.** `append` only records ids. The next `decodeStep` runs every id with
- * no cache behind it through the graph, in chunks of at most `maxChunk` (2048) cut at the
- * snapshot positions, under that step's mask, and reads the logits and the attention of
- * the last chunk's last position. A step does not append the id it chooses: `JsMachine`
+ * no cache behind it through the graph, in chunks cut at the snapshot positions -- so no
+ * chunk is longer than `snapshotEvery` (256), though the graph takes `maxChunk` (2048) --
+ * under that step's mask, and reads the logits and the attention of the last chunk's last
+ * position. A step does not append the id it chooses: `JsMachine`
  * appends it before the next step, which finds it pending, so a step in a run of steps
  * is exactly one forward pass of one token.
  *
@@ -63,17 +64,21 @@
  *
  * **Hidden runs** (`skipHidden`, on by default). A hidden position leaves the DeltaNet
  * state as it was (beta and the log decay are zero) and enters the convolution as zeros,
- * and no later query can attend its keys. So a run of at least `convShape[2]` (3) hidden
- * positions, not including the last one, is not run through the graph: the recurrent
+ * and no later query can attend its keys. So a run of at least `minSkip` (16, and never
+ * fewer than `convShape[2]`, 3) hidden positions, not including the last one, is not run
+ * through the graph: the recurrent
  * state is carried as it is, the convolution window becomes zeros, and the softmax cache
  * grows by zeros there in one copy, which the key mask hides. Chunks are also cut where
  * such a run starts. A fresh prefill and a replay under the same mask cut and skip at the
  * same positions, so they still agree bit for bit; and a skipped run aligned with the
  * chunks is bit for bit the run it stands in for, since a hidden position adds exact
- * zeros and multiplies by exact ones.
+ * zeros and multiplies by exact ones. A shorter hidden run -- the note the chat machine
+ * hides on every step but the ones that choose a tool's name, say -- runs inside its
+ * chunk under the key mask: skipping it would cut the chunk there, and at a few thousand
+ * positions a run of the graph costs more than the positions it saves.
  */
 
-import { encodePlain, sampleToken } from "./transformers_worker.js";
+import { encodePlain, pieceBytes, sampleToken } from "./transformers_worker.js";
 
 /** Positions between two snapshots of a context's recurrent state, and so the most a cut
  * replays. Also the length every prefill chunk is cut at. */
@@ -82,6 +87,8 @@ export const SNAPSHOT_EVERY = 256;
 export const MAX_SNAPSHOTS = 16;
 /** The most caches one context keeps, one per mask history. */
 export const MAX_TRACKS = 2;
+/** The shortest hidden run carried past rather than run (`skipHidden`). */
+export const MIN_SKIP = 16;
 
 /** Whether a `meta.json` describes an OPT+ZEOS export rather than an `export_model.py`
  * one. */
@@ -248,6 +255,7 @@ export class OptZeosWorker {
    * @param {number} [deps.maxSnapshots]
    * @param {number} [deps.maxTracks] caches per context, 1 or 2.
    * @param {boolean} [deps.skipHidden] carry the state past runs of hidden positions.
+   * @param {number} [deps.minSkip] the shortest such run, at least `convShape[2]`.
    */
   constructor({
     ort,
@@ -262,6 +270,7 @@ export class OptZeosWorker {
     maxSnapshots = MAX_SNAPSHOTS,
     maxTracks = MAX_TRACKS,
     skipHidden = true,
+    minSkip = MIN_SKIP,
   }) {
     if (meta.blockSize !== 1) throw new Error(`export has blockSize ${meta.blockSize}; expected 1`);
     if (!(maxSnapshots >= 1)) throw new RangeError("maxSnapshots must be at least 1");
@@ -282,6 +291,7 @@ export class OptZeosWorker {
     this.chunk = meta.maxChunk;
     /** The convolution's carried inputs: a hidden run this long leaves none of them. */
     this.convWindow = meta.convShape[2];
+    this.minSkip = Math.max(minSkip, this.convWindow);
     const [, heads, , headDim] = meta.kvShape;
     this.kvHeads = heads;
     this.headDim = headDim;
@@ -352,6 +362,7 @@ export class OptZeosWorker {
     maxSnapshots,
     maxTracks,
     skipHidden,
+    minSkip,
   }) {
     if (ort.env?.wasm && backend !== "cpu") ort.env.wasm.numThreads = numThreads;
     const decoder = new TextDecoder();
@@ -404,6 +415,7 @@ export class OptZeosWorker {
       maxSnapshots,
       maxTracks,
       skipHidden,
+      minSkip,
     });
   }
 
@@ -435,6 +447,10 @@ export class OptZeosWorker {
       this.pieces.set(tokenId, text);
     }
     return text;
+  }
+
+  pieceBytes(tokenId) {
+    return pieceBytes(this.tokenizer, tokenId);
   }
 
   createContext(jobId) {
@@ -693,11 +709,12 @@ export class OptZeosWorker {
 
   /** Where a hidden run from `start` that can be carried past without a run ends, or
    * `start` if it cannot. It never takes the last position, whose logits are the step's,
-   * and it needs `convWindow` hidden positions before the first snapshot position it
-   * crosses, so the state there is the one it carries. */
+   * it is at least `minSkip` long, and it needs `convWindow` hidden positions before the
+   * first snapshot position it crosses, so the state there is the one it carries. */
   skippable(allowed, start, n) {
     let end = start;
     while (end < n - 1 && !allowed[end]) end++;
+    if (end - start < this.minSkip) return start;
     return Math.min(end, this.nextBoundary(start)) - start >= this.convWindow ? end : start;
   }
 

@@ -1,5 +1,5 @@
 // Vendored from ZEOS demo/coop-count-web/web/frames.js
-// at ddbe6620460cfc3c975b2e68963dc80176609457 by site/scripts/zeos-sync.mjs.
+// at 7149bfc5e8f7fdc96a0ad7b8cce22c204a4a38f5 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -96,15 +96,22 @@ export function decodeFrame(bytes) {
   return header;
 }
 
-/** Answer one decoded request against a worker. Two calls sit outside the interface:
- * `pieces`, every piece at once, because asking one round trip at a time costs seconds,
- * and `backend`, which execution provider the worker runs on. */
+/** Answer one decoded request against a worker. Three calls sit outside the interface:
+ * `pieces`, every piece at once, because asking one round trip at a time costs seconds;
+ * `partialPieces`, `[id, bytes]` for every id whose piece is not whole characters (it
+ * holds U+FFFD), so `pieceBytes` is answered without a round trip per id; and `backend`,
+ * which execution provider the worker runs on. */
 export async function serveRequest(worker, request) {
   try {
     let value;
     if (request.method === "pieces") {
       value = [];
       for (let id = 0; id < worker.meta.tokenizerSize; id++) value.push(worker.piece(id));
+    } else if (request.method === "partialPieces") {
+      value = [];
+      for (let id = 0; id < worker.meta.tokenizerSize; id++) {
+        if (worker.piece(id).includes("\ufffd")) value.push([id, worker.pieceBytes(id)]);
+      }
     } else if (request.method === "backend") {
       value = worker.backend;
     } else {

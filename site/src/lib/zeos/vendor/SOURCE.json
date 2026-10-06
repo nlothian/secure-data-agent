@@ -2,13 +2,13 @@
   "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-integrate",
   "remote": "https://github.com/metacognitionai/zeos.git",
   "branch": "feat/zeos-integrate",
-  "commit": "ddbe6620460cfc3c975b2e68963dc80176609457",
+  "commit": "7149bfc5e8f7fdc96a0ad7b8cce22c204a4a38f5",
   "dirty": false,
   "files": {
-    "frames.js": "292b9837b4ef96e6c205ec5a7c143e62d0ab5632a89ef62bf86b250feabb1377",
-    "model_channel.js": "a8d64af9ca377db964690311979924da9ef985ba21e910f663755ed17d8295bf",
+    "frames.js": "93f2598942765beef2b5063b482c39c3628e1c6af1c6036af772bf09ff87e027",
+    "model_channel.js": "4233f437d68f9bf2000019e28e62450f7c0b04b8e20463c925c72a0272c1ece2",
     "stub_worker.js": "400a915ee73ab35d3384e33fb557fdcf3ffef4e9335ffd4b27f84f8fa61244ba",
-    "opt_zeos_worker.js": "602f7879c840d2d2a3119fad1b2b4cb7ef72e32866bc6044599d599ae0fdeb23",
-    "transformers_worker.js": "d3a4a5648a3ad36eeee6e18e93bfd6296d755ef03c34668e5596ea1e2f554211"
+    "opt_zeos_worker.js": "982e25e64c54621fcb632340c72bc8dc628b166c47fde8af2358889b8bab8167",
+    "transformers_worker.js": "0f0600f605d6525fb826ac617a145d33dae6af686806c0fda372804bc61750e3"
   }
 }
