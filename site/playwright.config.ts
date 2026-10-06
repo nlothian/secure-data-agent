@@ -16,6 +16,9 @@ const PORT = Number(process.env.GDA_E2E_PORT) || (LLM ? 4322 : 4321);
 
 export default defineConfig({
   testDir: './e2e',
+  // Loads the app once before the first test, so Vite's cold transform of
+  // every module does not land inside a spec's timeout.
+  globalSetup: './e2e/global-setup.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
