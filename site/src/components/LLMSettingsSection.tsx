@@ -521,8 +521,7 @@ function LocalGemmaRow({
   const detecting = gpuStatus === null;
   const reason = gpuStatus?.reason;
   const checking = switcher.state.phase === 'checking';
-  const pending =
-    switcher.state.phase === 'confirm' ? switcher.state.model : null;
+  const pending = switcher.state.phase === 'confirm' ? switcher.state : null;
 
   const handleRadioChange = (): void => {
     if (isActive) return;
@@ -544,7 +543,7 @@ function LocalGemmaRow({
       />
       <div style={styles.middle}>
         <div style={styles.builtInLabel}>Local model (WebGPU)</div>
-        <div style={styles.builtInUrl}>Runs in your browser via transformers.js (ONNX Runtime, WebGPU)</div>
+        <div style={styles.builtInUrl}>Runs in your browser on WebGPU (ONNX Runtime, via transformers.js or the ZEOS kernel)</div>
         {!supported && !detecting && reason ? (
           <p style={styles.localHint}>{reason}</p>
         ) : null}
@@ -573,7 +572,7 @@ function LocalGemmaRow({
         {pending ? (
           <div style={styles.localConfirm} role="alert">
             <p style={styles.localConfirmText}>
-              {pending.label} is about {formatGB(pending.approxBytes)} to
+              {pending.model.label} is about {formatGB(pending.bytes)} to
               download. It will download and cache when you close Settings.
             </p>
             <div style={styles.localConfirmActions}>

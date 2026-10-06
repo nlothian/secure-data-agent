@@ -24,7 +24,7 @@ async function readActiveModel(page: import('@playwright/test').Page): Promise<s
 }
 
 test.describe('ModelSelector — predefined Gemma 4 ONNX models', () => {
-  test('dropdown lists the two models with sizes and no custom picker', async ({ page }) => {
+  test('dropdown lists the four models with sizes and no custom picker', async ({ page }) => {
     // No model is preselected, so boot does not eager-load one (in
     // local-models mode every model counts as cached).
     await page.addInitScript(() => localStorage.setItem('tour.seen', '1'));
@@ -53,6 +53,11 @@ test.describe('ModelSelector — predefined Gemma 4 ONNX models', () => {
     await expect(e4b).toBeVisible();
     await expect(e4b).toContainText('4.9 GB');
     await expect(page.getByRole('menuitem', { name: /Qwen 3\.5 4B/ })).toBeVisible();
+    // Offered in every build (from the Hub outside local-models mode).
+    const zeos = page.getByRole('menuitem', { name: /ZEOS Qwen 4B/ });
+    await expect(zeos).toBeVisible();
+    await expect(zeos).toContainText('2.8 GB');
+    await expect(popover.getByRole('menuitem')).toHaveCount(4);
 
     // The old "Advanced" custom-file picker section is gone.
     await expect(page.locator('.chat-model-advanced-toggle')).toHaveCount(0);

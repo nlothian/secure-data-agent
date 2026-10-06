@@ -97,8 +97,7 @@ export default function ModelSelector({
   const isEmpty = !ep || !rawModel || (isLocal && !resolvedActive);
   const webGpuSupported = gpuStatus?.supported === true;
   const webGpuReason = gpuStatus?.reason;
-  const pendingConfirm =
-    modelSwitcher.state.phase === 'confirm' ? modelSwitcher.state.model : null;
+  const pendingConfirm = modelSwitcher.state.phase === 'confirm' ? modelSwitcher.state : null;
 
   return (
     <>
@@ -191,8 +190,8 @@ export default function ModelSelector({
         {pendingConfirm && (
           <div className="chat-model-confirm" role="alert">
             <p className="chat-model-confirm-text">
-              {pendingConfirm.label} is about{' '}
-              {formatGB(pendingConfirm.approxBytes)} to download. It is fetched
+              {pendingConfirm.model.label} is about{' '}
+              {formatGB(pendingConfirm.bytes)} to download. It is fetched
               once from Hugging Face and cached in this browser.
             </p>
             <div className="chat-model-confirm-actions">

@@ -12,7 +12,10 @@
  *   (src/workers/zeosOptModel.worker.ts over ZEOS `web/opt_zeos_worker.js`,
  *   vendored by `npm run zeos:sync`) on WebGPU. It answers the channel's
  *   `pieces` and `backend` calls and posts `{progress}` / `{ready}` per the
- *   model-thread protocol (`ModelThreadMessage` in ./protocol.ts).
+ *   model-thread protocol (`ModelThreadMessage` in ./protocol.ts). Its init
+ *   carries the export's source: `/models/<hfRepoId>/` with no cache in
+ *   local-models mode, otherwise the model's pinned Hub revision
+ *   (`hubSource`), kept in OPFS.
  */
 import {
   isLocalModelsMode,
@@ -20,12 +23,9 @@ import {
   ZEOS_STUB_STORAGE_KEY,
   type LocalGemmaModel,
 } from '../localLlm/models';
-import {
-  createLoadProgressAggregator,
-  type LoadProgressAggregator,
-  type LoadProgressSnapshot,
-} from '../localLlm/loadProgress';
 import { setLocalLlmDownloadProgress } from '../executionPanelStore';
+import { createZeosLoadTracker } from './loadProgress';
+import { hubUrl, type ModelCacheKey } from './vendor/model_cache.js';
 import type { AttachModelOptions } from './zeosHost';
 import type { ChatStubScript } from './scriptedChatModel';
 
@@ -66,25 +66,45 @@ function createStubThread(script: ChatStubScript): ZeosModelThread {
 }
 
 /**
- * The OPT+ZEOS model thread (src/workers/zeosOptModel.worker.ts), loading the
- * export from `/models/<hfRepoId>/`. Its files are not on the Hub, so this
- * needs local-models mode (`PUBLIC_LOCAL_MODELS=1`).
+ * Where the model thread reads the export (`init.source`): the directory URL,
+ * and the `{repo, revision}` to keep its files under in OPFS, or null for no
+ * cache. See ZEOS `model_cache.js`.
  */
-function createRealModelThread(model: LocalGemmaModel): ZeosModelThread {
-  if (!isLocalModelsMode()) {
+export interface ZeosModelSource {
+  url: string;
+  cache: ModelCacheKey | null;
+}
+
+/**
+ * Local-models mode reads `/models/<hfRepoId>/` from the dev server with no
+ * cache (a missing file fails loudly, as for the transformers.js models);
+ * otherwise the pinned Hub revision in `model.hubSource`, cached in OPFS.
+ */
+export function zeosModelSource(model: LocalGemmaModel): ZeosModelSource {
+  if (isLocalModelsMode()) {
+    return { url: `${import.meta.env.BASE_URL ?? '/'}models/${model.hfRepoId}/`, cache: null };
+  }
+  if (!model.hubSource) {
     throw new Error(
-      `${model.label} is only served from the local models/ folder: start the dev server ` +
-        `with PUBLIC_LOCAL_MODELS=1 (and run \`npm run models:fetch -- zeosq4b\`). ` +
+      `${model.label} has no Hub source, so it is only served from the local models/ folder: ` +
+        'start the dev server with PUBLIC_LOCAL_MODELS=1 (and run `npm run models:fetch -- zeosq4b`). ' +
         `For the scripted stub, set localStorage['${ZEOS_STUB_STORAGE_KEY}'] to ` +
         '{"replies": [...], "attention": "recent"} and reload.',
     );
   }
+  const { repo, revision } = model.hubSource;
+  return { url: hubUrl({ repo, revision }), cache: { repo, revision } };
+}
+
+/** The OPT+ZEOS model thread (src/workers/zeosOptModel.worker.ts). */
+function createRealModelThread(model: LocalGemmaModel): ZeosModelThread {
+  const source = zeosModelSource(model);
   return {
     modelWorker: () =>
       new Worker(new URL('../../workers/zeosOptModel.worker.ts', import.meta.url), {
         type: 'module',
       }),
-    init: { modelUrl: `${import.meta.env.BASE_URL ?? '/'}models/${model.hfRepoId}/` },
+    init: { source },
     label: `${model.label} (OPT+ZEOS, WebGPU)`,
     stub: false,
   };
@@ -92,37 +112,24 @@ function createRealModelThread(model: LocalGemmaModel): ZeosModelThread {
 
 /**
  * Feed the model thread's `{progress}` messages to the Throbber, as
- * llmService does for the transformers.js models: one aggregate over the
+ * llmService does for the transformers.js models: one percentage over the
  * thread's own byte count (`bytes` / `bytes_total` cover each unique file
- * once; the tied embedding is read once for two manifest entries), then
+ * once; the tied embedding is read once for two manifest entries), worded
+ * by phase (./loadProgress.ts: "Downloading", "Loading" from the OPFS cache
+ * or the local models/ folder, "Verifying" a resumed download), then
  * "Loading … onto GPU" while ONNX Runtime builds the sessions.
  */
 export function createZeosLoadProgress(model: LocalGemmaModel): {
   onProgress: (p: Record<string, unknown>) => void;
   done: () => void;
 } {
-  let agg: LoadProgressAggregator | null = null;
-  const publish = (s: LoadProgressSnapshot) => setLocalLlmDownloadProgress(s);
+  const tracker = createZeosLoadTracker({
+    label: model.label,
+    local: isLocalModelsMode(),
+    onChange: setLocalLlmDownloadProgress,
+  });
   return {
-    onProgress(p) {
-      const total = typeof p.bytes_total === 'number' ? p.bytes_total : 0;
-      if (!agg && total > 0) {
-        agg = createLoadProgressAggregator({
-          label: model.label,
-          // Local-models mode: the files come from disk, not the network.
-          fromCache: true,
-          expectedFiles: [{ path: 'model', bytes: total }],
-          onChange: publish,
-        });
-        publish(agg.snapshot());
-      }
-      if (!agg) return;
-      if (p.phase === 'download' && typeof p.bytes === 'number') {
-        agg.onEvent({ status: 'progress', file: 'model', loaded: p.bytes, total });
-      } else if (p.phase === 'session') {
-        agg.beginInit();
-      }
-    },
+    onProgress: tracker.onProgress,
     done() {
       setLocalLlmDownloadProgress(null);
     },

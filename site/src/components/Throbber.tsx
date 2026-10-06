@@ -22,6 +22,8 @@ export default function Throbber() {
     if (dl) {
       if (dl.phase === 'init') {
         labels.push(`Loading ${dl.label} onto GPU`);
+      } else if (dl.phase === 'verify') {
+        labels.push(`Verifying ${dl.label} · ${dl.pct}%`);
       } else {
         const verb = dl.fromCache ? 'Loading' : 'Downloading';
         labels.push(`${verb} ${dl.label} · ${dl.pct}%`);

@@ -6,13 +6,14 @@ import {
   type LocalGemmaId,
   type LocalGemmaModel,
 } from '../lib/localLlm/models';
-import { isModelCached } from '../lib/localLlm/modelCache';
+import { isModelCached, uncachedBytes } from '../lib/localLlm/modelCache';
 import { modelSwitchBlockedReason, releaseUnusedEngines } from '../lib/localLlm/engineLifecycle';
 
 export type SwitcherState =
   | { phase: 'idle' }
   | { phase: 'checking'; modelId: LocalGemmaId }
-  | { phase: 'confirm'; model: LocalGemmaModel };
+  /** `bytes`: what is still to download (a resumed download counts what it holds). */
+  | { phase: 'confirm'; model: LocalGemmaModel; bytes: number };
 
 export interface UseLocalGemmaSwitcherOptions {
   // When true, apply() also triggers ensureLoaded(modelId) so the download
@@ -90,12 +91,12 @@ export default function useLocalGemmaSwitcher(
             commit(modelId);
             setState({ phase: 'idle' });
           } else {
-            setState({ phase: 'confirm', model });
+            setState({ phase: 'confirm', model, bytes: await uncachedBytes(model) });
           }
         } catch {
           // Fall back to confirm on cache-check failure so the user is still
           // warned about the download size before we hit the network.
-          setState({ phase: 'confirm', model });
+          setState({ phase: 'confirm', model, bytes: model.approxBytes });
         }
       })();
     },

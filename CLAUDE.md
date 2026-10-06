@@ -149,7 +149,8 @@ suite once before you finish.
 ## Hosting
 
 Production is Cloudflare Pages (`secure-data-agent.nicklothian.com`): root
-`site/`, `npm run build`, output `dist`, with `public/_headers` honoured.
+`site/`, `npm run build`, output `dist`, with `public/_headers` honoured
+(COOP/COEP on every page, see below).
 Pages rejects any file over 25 MiB. ONNX Runtime's
 `ort-wasm-simd-threaded.asyncify.wasm` is ~26.9 MB, so a production build
 loads it (and its `.mjs`) from jsDelivr at the installed onnxruntime-web
@@ -160,22 +161,22 @@ Dev still serves it from node_modules. Keep every `dist/` file under 25 MiB.
 
 ## Cross-origin isolation (COOP/COEP)
 
-`astro dev` and `astro preview` serve every page with
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: credentialless` (`server.headers` in
-`site/astro.config.mjs`). Production (`site/public/_headers`) does not send
-them until ZEOS ships there: the ZEOS Qwen 4B model, the only thing that
-needs isolation, is listed only in local-models or stub dev mode. Isolation
+Every page is served with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`: by `astro dev` and
+`astro preview` from `server.headers` in `site/astro.config.mjs`, and in
+production from `site/public/_headers` (a `/*` rule; Pages applies it and
+the `/tour-data/*` rule together). Keep the two in step. Isolation
 makes `crossOriginIsolated` true, which the ZEOS kernel needs for
 `SharedArrayBuffer` + `Atomics.wait`; without it `startKernelChatEngine`
 fails at once with `NotCrossOriginIsolatedError` (the chat shows the
 reason and the trust indicator reads "ZEOS error"), before any download.
-Nothing else depends on it.
+Nothing else depends on it. Safari does not support COEP
+`credentialless`, so the page is not isolated there and ZEOS Qwen 4B fails
+with that error; the other models are unaffected.
 `credentialless` (not `require-corp`) keeps Google Fonts, the Hugging Face
 Hub's CDN redirects, jsDelivr (Pyodide, DuckDB-wasm) and remote CSV URLs
 working without CORP headers; cross-origin no-cors loads just go without
-cookies. Any new cross-origin iframe or popup must cope with this in dev,
-and in production once the headers move to `_headers`.
+cookies. Any new cross-origin iframe or popup must cope with this.
 Isolation also turns on ONNX Runtime's multi-threaded wasm by default,
 which made Gemma generation ~2.5x slower, so `src/workers/llm.worker.ts` pins
 `env.backends.onnx.wasm.numThreads = 1` (the pre-isolation behaviour, and
@@ -260,14 +261,19 @@ Explainer's conversation, via `sideTaskConfig` / `transformersModelIdFor`)
 use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
 one run holds the main chat.
 
-- **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
-  mode. The same export is on the Hub as
-  `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` (public, ungated; its file sizes
-  match this model's `modelFiles.json` entry), but the site does not load
-  from it yet: the model thread reads `/models/<hfRepoId>/`, and ZEOS's
-  Hub loader and cache (vendored `model_cache.js`) is not wired in. Run
-  `cd site && npm run models:fetch -- zeosq4b`, which hard-links the files
-  from
+- **Selecting it.** It is listed in every build, production included.
+  Outside local-models mode it downloads from the Hub repo
+  `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` pinned at revision
+  `f71e07f80aa6d20f66c69575facae9813a053c5e` (`hubSource` in `models.ts`),
+  about 2.5 GB, through ZEOS's vendored `modelReader` (`model_cache.js`):
+  every file is checked against the SHA-256 and size in the export's
+  `meta.json`, and kept in OPFS under
+  `zeos-model-cache/<repo>/<revision>/` (`opfs_store.js`), so a reload reads
+  it from disk. An interrupted download resumes with a `Range` request, and
+  the storage quota is checked before the first large file. With
+  `PUBLIC_LOCAL_MODELS=1` the model thread reads `/models/<hfRepoId>/` with
+  no cache instead; for that, run `cd site && npm run models:fetch --
+  zeosq4b`, which hard-links the files from
   `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
   defaults to the zeos-webgpu-main worktree). After
   rebuilding the export, run `npm run models:manifest-local --
@@ -276,7 +282,8 @@ one run holds the main chat.
 - **Real model thread.** `createRealModelThread` in
   `src/lib/zeos/zeosModelWorker.ts` starts
   `src/workers/zeosOptModel.worker.ts`, which loads ZEOS `OptZeosWorker`
-  (vendored `opt_zeos_worker.js`) from `/models/<hfRepoId>/` with the app's
+  (vendored `opt_zeos_worker.js`) from the Hub cache or `/models/<hfRepoId>/`
+  (see above) with the app's
   own `onnxruntime-web` (pinned to the transformers.js build,
   1.31.0-dev.20260914, which runs the fused DeltaNet ops on WebGPU) and
   `@huggingface/tokenizers`, one wasm thread, and serves the
