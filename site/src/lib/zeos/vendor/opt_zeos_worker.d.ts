@@ -4,6 +4,8 @@ import type { ZeosModelWorkerLike } from './model_channel';
 export const SNAPSHOT_EVERY: number;
 export const MAX_SNAPSHOTS: number;
 export const MAX_TRACKS: number;
+/** The shortest hidden run carried past rather than run (`skipHidden`): 16. */
+export const MIN_SKIP: number;
 
 /** Whether a `meta.json` describes an OPT+ZEOS export (it names `decoder` and `embedTokens`). */
 export function isOptZeosMeta(meta: unknown): boolean;
@@ -25,6 +27,8 @@ export interface OptZeosLoadOptions {
   maxTracks?: number;
   /** Carry the state past runs of hidden positions without running them (default true). */
   skipHidden?: boolean;
+  /** The shortest such run, at least the convolution window (default `MIN_SKIP`). */
+  minSkip?: number;
 }
 
 export class OptZeosWorker implements ZeosModelWorkerLike {
@@ -46,6 +50,8 @@ export class OptZeosWorker implements ZeosModelWorkerLike {
   info(): unknown;
   tokenize(text: string): Int32Array | number[];
   piece(tokenId: number): string;
+  /** The byte-level BPE bytes of a token (transformers_worker `pieceBytes`). */
+  pieceBytes(tokenId: number): Uint8Array;
   createContext(jobId: string): void;
   destroyContext(jobId: string): void;
   length(jobId: string): number;

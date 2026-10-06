@@ -154,15 +154,18 @@ class KernelChatRun implements ZeosChatRun {
   }
 
   importHistory(turns: readonly ZeosImportTurn[], startIntegrity = 2) {
-    // `trusted` is always a real bool (ZEOS refuses anything else), and the
-    // kernel checks a trusted result against the trusted-results table.
-    const entries = turns.map((t) =>
-      t.role === 'assistant'
-        ? { role: t.role, text: t.text, integrity: t.integrity ?? 3 }
-        : t.role === 'tool'
-          ? { role: t.role, text: t.text, trusted: t.trusted === true }
-          : { role: t.role, text: t.text },
-    );
+    // `trusted` is always a real bool and `integrity` an int from 0 to 3 (ZEOS
+    // refuses anything else). A trusted result carries its call, `name` and
+    // `arguments`, which the kernel checks against the trusted-results table
+    // exactly; one without its call replays on ring 3.
+    const entries = turns.map((t) => {
+      if (t.role === 'assistant') return { role: t.role, text: t.text, integrity: t.integrity ?? 3 };
+      if (t.role !== 'tool') return { role: t.role, text: t.text };
+      if (t.trusted === true && t.toolName !== undefined && t.toolArgs !== undefined) {
+        return { role: t.role, text: t.text, trusted: true, name: t.toolName, arguments: t.toolArgs };
+      }
+      return { role: t.role, text: t.text, trusted: false };
+    });
     // Only a demoted start is passed, so a wheel without `start_integrity`
     // still replays an undemoted conversation.
     return this.kernel.callMethod<ZeosEvent[]>(

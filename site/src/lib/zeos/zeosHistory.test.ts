@@ -87,6 +87,58 @@ describe('buildZeosImport', () => {
     expect(rings({ integrity: 3, ring: 3, toolRings: [3, 3, 3] })[0]).toEqual(['CallSkill', 3]);
   });
 
+  it("carries a trusted result's call, name and parsed arguments, which ZEOS checks exactly", () => {
+    const skillCall = formatToolCallToken('CallSkill', JSON.stringify({ skill: 'sql' }));
+    const skillResult = formatToolResponseToken('CallSkill', JSON.stringify('# SQL card'));
+    const tools = buildZeosImport([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: `${skillCall}${skillResult}${call}${result}Done.`,
+        trust: { integrity: 2, ring: 2, toolRings: [2, 3] },
+      },
+    ]).filter((t) => t.role === 'tool');
+    expect(tools[0]).toEqual({
+      role: 'tool',
+      text: JSON.stringify('# SQL card'),
+      toolName: 'CallSkill',
+      toolArgs: { skill: 'sql' },
+      trusted: true,
+    });
+    // An untrusted result has no call to vouch for.
+    expect(tools[1].trusted).toBeUndefined();
+    expect(tools[1].toolArgs).toBeUndefined();
+  });
+
+  it("never replays an empty turn: a demoted failed turn's placeholder carries only its demotion", () => {
+    // mapMessagesForLLM keeps a demoted failed turn as '' with its trust.
+    const prior = [
+      { role: 'user' as const, content: 'q' },
+      { role: 'assistant' as const, content: '', trust: { integrity: 3, ring: 3, demotedBy: 'RunSQL result #1' } },
+      { role: 'user' as const, content: '   ' },
+      { role: 'user' as const, content: 'again' },
+      { role: 'assistant' as const, content: ' \n', trust: { integrity: 2, ring: 2 } },
+    ];
+    const turns = buildZeosImport(prior);
+    expect(turns).toEqual([
+      { role: 'user', text: 'q' },
+      { role: 'user', text: 'again' },
+    ]);
+    expect(turns.every((t) => t.text !== '')).toBe(true);
+    expect(importStartIntegrity(prior).integrity).toBe(3);
+  });
+
+  it('replays an assistant turn at an int integrity, 2 or 3, whatever the record holds', () => {
+    const at = (integrity: unknown) =>
+      buildZeosImport([
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: 'a', trust: { integrity, ring: 2 } as never },
+      ])[1].integrity;
+    expect([at(0), at(1), at(2), at(2.5), at(3), at(7), at(NaN), at('2'), at(undefined)]).toEqual([
+      2, 2, 2, 3, 3, 3, 3, 3, 3,
+    ]);
+  });
+
   it('replays a skill name that is not an exact bundled name on ring 3, even if recorded on ring 2', () => {
     const skillResult = formatToolResponseToken('CallSkill', JSON.stringify({ error: 'Unknown skill' }));
     for (const skill of ['SQL', 'Sql', ' sql', 'sql ', 'sql\n']) {

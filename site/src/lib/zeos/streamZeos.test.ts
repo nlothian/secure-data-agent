@@ -51,12 +51,26 @@ const segment = (n: number, pipe = 'tools.results') => ({
   injected_at: 0,
 });
 
-/** A run that plays one batch of events per `step`, after the delivery that unblocks it. */
+/**
+ * A run that plays one batch of events per `step`, after the delivery that
+ * unblocks it. Like ZEOS `ChatRun`, it refuses a delivery the job is not
+ * waiting for, a second one before the next `step`, and an empty user message.
+ */
 class FakeRun implements ZeosChatRun {
   log: [string, ...unknown[]][] = [];
   waiting: string | null = 'chat.user';
   startIntegrity: number | undefined;
+  /** A delivery has been made since the last `step`. */
+  queued = false;
   constructor(private readonly batches: ZeosEvent[][]) {}
+  private expect(pipes: readonly string[], what: string): void {
+    if (this.queued || this.waiting === null || !pipes.includes(this.waiting)) {
+      throw new Error(
+        `RuntimeError: ${what}: the job is waiting on ${this.waiting}${this.queued ? ', with a delivery already queued' : ''}`,
+      );
+    }
+    this.queued = true;
+  }
   async importHistory(turns: readonly ZeosImportTurn[], startIntegrity?: number) {
     this.log.push(['importHistory', turns]);
     this.startIntegrity = startIntegrity;
@@ -65,10 +79,13 @@ class FakeRun implements ZeosChatRun {
       .map((_, i): ZeosEvent => ({ type: 'arrived', pipe: 'tools.results', segment: 100 + i, ring: 3, integrity: 3 }));
   }
   async sendUser(text: string) {
+    if (text === '') throw new Error('ValueError: a user message is empty');
+    this.expect(['chat.user'], 'send_user');
     this.log.push(['sendUser', text]);
     this.waiting = null;
   }
   async step() {
+    this.queued = false;
     const batch = this.batches.shift() ?? [];
     this.log.push(['step', batch.length]);
     for (const e of batch) {
@@ -87,10 +104,12 @@ class FakeRun implements ZeosChatRun {
     return [];
   }
   async deliverToolResult(text: string, trusted = false) {
+    this.expect(['tools.results', 'tools.results.trusted'], 'deliver_tool_result');
     this.log.push(['deliverToolResult', text, trusted]);
     this.waiting = null;
   }
   async deliverRefusal(text?: string) {
+    this.expect(['tools.results', 'tools.results.trusted'], 'deliver_refusal');
     this.log.push(['deliverRefusal', text]);
     this.waiting = null;
   }
@@ -231,6 +250,41 @@ describe('streamZeos', () => {
     expect(engine.opened[0].toolClasses).toBe(ZEOS_TOOL_CLASSES);
     expect(engine.opened[0].trustedResults).toBe(ZEOS_TRUSTED_RESULTS);
     expect(c.trust.at(-1)).toEqual({ integrity: 2, ring: 2, toolRings: [] });
+  });
+
+  it('appends an empty token as it is: part of a character the next one completes', async () => {
+    // ZEOS joins a split character's bytes, so its first byte token reads ''.
+    const split: ZeosEvent[] = [
+      { type: 'token', text: 'Done ' },
+      { type: 'token', text: '' },
+      { type: 'token', text: '' },
+      { type: 'token', text: '' },
+      { type: 'token', text: '🎉' },
+      { type: 'token', text: '' },
+      { type: 'token', text: ' é.' },
+    ];
+    await useEngine([[[...split, { type: 'reply', text: 'Done 🎉 é.', reasoning: null, raw: '' }, { type: 'waiting', pipe: 'chat.user' }]]]);
+    const c = await send([{ role: 'user', content: 'hi' }]).done;
+    expect(c.error).toBeNull();
+    expect(c.done).toBe(true);
+    expect(c.ui).toBe('Done 🎉 é.');
+    expect(c.history).toBe('Done 🎉 é.');
+  });
+
+  it('with thinking off, takes the whole reply as text (reasoning null)', async () => {
+    const text = 'The answer is 4.';
+    await useEngine([[[...tokens(text), { type: 'reply', text, reasoning: null, raw: text }, { type: 'waiting', pipe: 'chat.user' }]]]);
+    const c = await send([{ role: 'user', content: '2+2?' }]).done;
+    expect(c.error).toBeNull();
+    expect(c.ui).toBe(text);
+    expect(c.ui).not.toContain('<|channel>');
+  });
+
+  it('never sends ZEOS an empty user message', async () => {
+    await useEngine([]);
+    const c = await send([{ role: 'user', content: '' }]).done;
+    expect(c.error?.message).toMatch(/empty/);
+    expect(engine?.runs ?? []).toEqual([]);
   });
 
   it('runs a read call, then asks before an effect, and runs it when approved', async () => {
@@ -678,6 +732,7 @@ describe('streamZeos', () => {
     const step = vi.spyOn(FakeRun.prototype, 'step');
     let n = 0;
     step.mockImplementation(async function (this: FakeRun) {
+      this.queued = false;
       n += 1;
       if (n === 1) {
         this.waiting = 'tools.results';

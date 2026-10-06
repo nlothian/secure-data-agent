@@ -573,6 +573,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     onError(new Error('streamZeos: the conversation must end with a user message.'));
     return;
   }
+  // ZEOS refuses an empty user message (nothing would arrive, and the job
+  // would wait on for it), so say so here rather than as a kernel error.
+  const userText = userTextForZeos(last.content);
+  if (!userText) {
+    onError(new Error('streamZeos: the message is empty.'));
+    return;
+  }
   const prior = turns.slice(0, -1);
   const key = conversationKey(system, thinking, gateMode, maskToolChoice, prior);
 
@@ -666,7 +673,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     const s = session!;
 
     const turnStart = performance.now();
-    await s.run.sendUser(userTextForZeos(last.content));
+    await s.run.sendUser(userText);
     const text = new ZeosTurnText(fmt, thinking, emit, emitHistory);
     live = { s, text };
     let calls = 0;
@@ -751,6 +758,8 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         }
         switch (e.type) {
           case 'token': {
+            // `text` may be '': a token that is part of a character the next
+            // one completes (ZEOS reads a turn as bytes). It still counts.
             const now = performance.now();
             if (firstTokenAt === null) firstTokenAt = now;
             lastTokenAt = now;

@@ -29,6 +29,12 @@ export interface ZeosImportTurn {
   integrity?: number;
   /** Tool turns: the tool whose result this is. */
   toolName?: string;
+  /**
+   * Tool turns: the call's arguments, parsed. ZEOS replays a trusted result
+   * only with its call (`name`, `arguments`), which `trusted_results` must
+   * name exactly, as it would live.
+   */
+  toolArgs?: Record<string, unknown>;
   /** Tool turns: replayed on `tools.results.trusted` (ring 2). */
   trusted?: boolean;
 }
@@ -117,6 +123,24 @@ function argsOf(json: string | undefined): Record<string, unknown> | undefined {
   }
 }
 
+/**
+ * The integrity a past assistant turn replays at: an int, 2 or 3 (ZEOS
+ * refuses anything but an int from 0 to 3, and its integrity is only ever 2
+ * or 3, so anything better is still 2). A turn with no record, or a record
+ * that is not a number, is untrusted.
+ */
+function replayIntegrity(recorded: unknown): number {
+  if (typeof recorded !== 'number' || !Number.isFinite(recorded)) return EXTERNAL;
+  return recorded > TRUSTED ? EXTERNAL : TRUSTED;
+}
+
+/**
+ * Stored messages → `import_history` turns. ZEOS refuses an empty user or
+ * assistant turn, so neither is replayed: a whitespace-only message, or the
+ * empty placeholder `mapMessagesForLLM` keeps for a demoted failed turn
+ * (whose demotion `importStartIntegrity` carries instead). A tool result is
+ * never empty (`toolResultForZeos`).
+ */
 export function buildZeosImport(
   messages: readonly Pick<StreamChatMessage, 'role' | 'content' | 'trust'>[],
 ): ZeosImportTurn[] {
@@ -127,8 +151,7 @@ export function buildZeosImport(
       if (m.content.trim()) out.push({ role: 'user', text: userTextForZeos(m.content) });
       continue;
     }
-    // The ZEOS integrity is only ever 2 or 3; anything better is still 2.
-    const integrity = m.trust ? Math.max(TRUSTED, m.trust.integrity) : EXTERNAL;
+    const integrity = replayIntegrity(m.trust?.integrity);
     let toolIndex = 0;
     for (const seg of importHistoryForQwen([{ role: 'assistant', content: m.content }])) {
       if (seg.role === 'tool') {
@@ -136,15 +159,14 @@ export function buildZeosImport(
         // (the kernel put it there) and the call is still an exact bundled
         // skill: never on the name alone, which the model's text could spell.
         const recorded = m.trust?.toolRings?.[toolIndex++];
+        const args = argsOf(seg.toolArgsJson);
         const trusted =
-          seg.toolName !== undefined &&
-          isTrustedToolResult(seg.toolName, argsOf(seg.toolArgsJson)) &&
-          recorded === TRUSTED;
+          seg.toolName !== undefined && args !== undefined && isTrustedToolResult(seg.toolName, args) && recorded === TRUSTED;
         out.push({
           role: 'tool',
           text: toolResultForZeos(seg.content),
           toolName: seg.toolName,
-          ...(trusted ? { trusted: true } : {}),
+          ...(trusted ? { toolArgs: args, trusted: true } : {}),
         });
       } else if (seg.content.trim()) {
         out.push({ role: 'assistant', text: seg.content, integrity });

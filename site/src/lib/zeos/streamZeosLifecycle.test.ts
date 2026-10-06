@@ -158,26 +158,53 @@ class FakeEngine implements ZeosChatEngine {
   }
 }
 
+/**
+ * Deliveries ZEOS `ChatRun` would refuse (RuntimeError): one the job is not
+ * waiting for, a second before the next `step`, one into a closed run, or
+ * an empty user message. Every test ends with none.
+ */
+const violations: string[] = [];
+
 class FakeRun implements ZeosChatRun {
   log: string[] = [];
   waiting: string | null = 'chat.user';
   startIntegrity: number | undefined;
+  queued = false;
+  closed = false;
   constructor(
     private readonly engine: FakeEngine,
     private readonly steps: Step[],
   ) {}
+  /** As ZEOS `ChatRun._expect`, when the kernel runs the call. */
+  private expect(pipes: readonly string[], what: string): void {
+    const bad = this.closed
+      ? 'the run is closed'
+      : this.queued
+        ? 'a delivery is already queued'
+        : this.waiting === null || !pipes.includes(this.waiting)
+          ? `the job is waiting on ${this.waiting}`
+          : null;
+    if (bad) {
+      violations.push(`${what}: ${bad}`);
+      throw new Error(`RuntimeError: ${what}: ${bad}`);
+    }
+    this.queued = true;
+  }
   importHistory(_turns: unknown, startIntegrity?: number) {
     this.log.push('importHistory');
     this.startIntegrity = startIntegrity;
     return this.engine.call(() => [] as ZeosEvent[]);
   }
-  sendUser() {
+  sendUser(text: string) {
     this.log.push('sendUser');
     return this.engine.call(() => {
+      if (text === '') violations.push('send_user: empty');
+      this.expect(['chat.user'], 'send_user');
       this.waiting = null;
     });
   }
   step() {
+    this.queued = false;
     const next = this.steps.shift() ?? [];
     this.log.push(next === HANG ? 'step(hang)' : isSlow(next) ? 'step(slow)' : 'step');
     if (next === HANG) return this.engine.call(() => [] as ZeosEvent[], true);
@@ -203,12 +230,14 @@ class FakeRun implements ZeosChatRun {
   deliverToolResult() {
     this.log.push('deliverToolResult');
     return this.engine.call(() => {
+      this.expect(['tools.results', 'tools.results.trusted'], 'deliver_tool_result');
       this.waiting = null;
     });
   }
   deliverRefusal() {
     this.log.push('deliverRefusal');
     return this.engine.call(() => {
+      this.expect(['tools.results', 'tools.results.trusted'], 'deliver_refusal');
       this.waiting = null;
     });
   }
@@ -217,7 +246,9 @@ class FakeRun implements ZeosChatRun {
   }
   close() {
     this.log.push('close');
-    return this.engine.call(() => undefined);
+    return this.engine.call(() => {
+      this.closed = true;
+    });
   }
 }
 
@@ -276,6 +307,7 @@ describe('ZEOS engine lifecycle', () => {
 
   beforeEach(async () => {
     store.resetForTests();
+    violations.length = 0;
     engines = [];
     scripts = [];
     factory.mockClear();
@@ -284,6 +316,9 @@ describe('ZEOS engine lifecycle', () => {
   afterEach(async () => {
     vi.useRealTimers();
     await __setZeosEngineForTests(null);
+    // Stop, the grace period, an interrupt, approval or denial, the cap: no
+    // path delivers twice, or into a run that is not waiting for it.
+    expect(violations).toEqual([]);
   });
 
   it('a crash mid-turn ends the turn with the error, says so, and the next message starts afresh', async () => {

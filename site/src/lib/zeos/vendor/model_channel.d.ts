@@ -11,6 +11,12 @@ export interface ZeosModelWorkerLike {
   info(): unknown;
   tokenize(text: string): Int32Array | number[];
   piece(tokenId: number): string;
+  /**
+   * The bytes of a token whose piece is not whole characters (it holds U+FFFD:
+   * one byte of an emoji, say). Asked only for such ids, through `serveRequest`'s
+   * `partialPieces`; a worker whose pieces are all whole characters never is.
+   */
+  pieceBytes?(tokenId: number): Uint8Array;
   createContext(jobId: string): void;
   destroyContext(jobId: string): void;
   length(jobId: string): number;
@@ -39,4 +45,7 @@ export class SyncModelWorker {
   );
   readonly backend: string;
   call(method: string, ...args: unknown[]): unknown;
+  piece(tokenId: number): string;
+  /** From one `partialPieces` call on first use; a RangeError for an id that is whole characters. */
+  pieceBytes(tokenId: number): Uint8Array;
 }
