@@ -115,3 +115,22 @@ describe('mapMessagesForLLM — strips compacted marker from cloud-API replay', 
     expect(out[1].content).toBe('bodytail');
   });
 });
+
+describe('mapMessagesForLLM — failed turns', () => {
+  it('drops a failed turn, but keeps the demotion of a failed ZEOS turn (as an empty turn)', () => {
+    const failed = (trust?: ChatMessage['trust']): ChatMessage => ({
+      ...assistantMsg('a1', 'ZEOS model thread default crashed'),
+      error: true,
+      ...(trust ? { trust } : {}),
+    });
+    const demoted = { integrity: 3, ring: 3, toolRings: [3], demotedBy: 'ListInputs result #1' };
+    expect(mapMessagesForLLM([userMsg('u1', 'hi'), failed()])).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(mapMessagesForLLM([userMsg('u1', 'hi'), failed({ integrity: 2, ring: 2, toolRings: [] })])).toEqual([
+      { role: 'user', content: 'hi' },
+    ]);
+    expect(mapMessagesForLLM([userMsg('u1', 'hi'), failed(demoted)])).toEqual([
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: '', trust: demoted },
+    ]);
+  });
+});

@@ -87,6 +87,8 @@ const INITIAL: ZeosSnapshot = {
 let snapshot: ZeosSnapshot = INITIAL;
 const listeners = new Set<() => void>();
 let decide: ((approved: boolean) => void) | null = null;
+/** Rejects the pending approval: the stream behind it was torn down. */
+let cancel: ((reason: Error) => void) | null = null;
 let nextApprovalId = 1;
 
 function set(patch: Partial<ZeosSnapshot>): void {
@@ -123,9 +125,14 @@ export function setTrust(
   set(trust);
 }
 
-/** A new conversation: forget the old one's trust and journal. */
-export function resetConversation(): void {
-  cancelApproval();
+/**
+ * A new conversation, or the engine behind the old one is gone: forget its
+ * trust and journal. A pending approval is cancelled: its `requestApproval`
+ * rejects with `reason` (never a Deny, which would tell the model the user
+ * declined), and its id stays dead, so a late click on that card does nothing.
+ */
+export function resetConversation(reason?: Error): void {
+  cancelApproval(reason);
   set({ integrity: null, sessionFloor: null, demotedBy: null, journal: [], spoofs: [], masked: [] });
 }
 
@@ -152,23 +159,31 @@ export function appendJournal(lines: readonly string[]): void {
 
 /**
  * Show the approval card and wait for the user. Resolves true on Approve,
- * false on Deny; rejects with an AbortError if `signal` aborts first.
+ * false on Deny; rejects with an AbortError if `signal` aborts first, or with
+ * the reason `resetConversation` was given if the conversation is torn down.
  */
 export function requestApproval(approval: ZeosApproval, signal?: AbortSignal): Promise<boolean> {
-  cancelApproval();
+  cancelApproval(new Error('A newer ZEOS approval replaced this one.'));
   return new Promise<boolean>((resolve, reject) => {
-    const onAbort = (): void => {
+    const clear = (): void => {
+      signal?.removeEventListener('abort', onAbort);
       decide = null;
+      cancel = null;
       set({ pending: null });
+    };
+    const onAbort = (): void => {
+      clear();
       reject(new DOMException('Aborted', 'AbortError'));
     };
     if (signal?.aborted) return onAbort();
     signal?.addEventListener('abort', onAbort, { once: true });
     decide = (approved) => {
-      signal?.removeEventListener('abort', onAbort);
-      decide = null;
-      set({ pending: null });
+      clear();
       resolve(approved);
+    };
+    cancel = (reason) => {
+      clear();
+      reject(reason);
     };
     set({ pending: { ...approval, id: nextApprovalId++ } });
   });
@@ -185,13 +200,14 @@ export function deny(id: number): void {
 }
 
 /** Drop a pending approval without answering (the stream was torn down). */
-function cancelApproval(): void {
-  if (decide) decide(false);
+function cancelApproval(reason = new Error('The ZEOS conversation was reset.')): void {
+  cancel?.(reason);
 }
 
 /** Tests. */
 export function resetForTests(): void {
   decide = null;
+  cancel = null;
   snapshot = INITIAL;
   for (const l of listeners) l();
 }

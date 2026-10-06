@@ -54,4 +54,22 @@ describe('approval answers are bound to a call (T6)', () => {
     store.approve(idB);
     await expect(b).resolves.toBe(true);
   });
+
+  it('a conversation torn down under a card rejects it with the reason, never a Deny, and its id stays dead', async () => {
+    const pending = store.requestApproval(approval(0));
+    const id = store.getSnapshot().pending!.id;
+    const crash = new Error('ZEOS kernel worker error: out of memory');
+    store.resetConversation(crash);
+    await expect(pending).rejects.toBe(crash);
+    expect(store.getSnapshot().pending).toBeNull();
+    // A click on the dead card, before or after the next card shows, does nothing.
+    store.approve(id);
+    const next = store.requestApproval(approval(0));
+    const nextId = store.getSnapshot().pending!.id;
+    store.approve(id);
+    store.deny(id);
+    expect(store.getSnapshot().pending?.id).toBe(nextId);
+    store.deny(nextId);
+    await expect(next).resolves.toBe(false);
+  });
 });

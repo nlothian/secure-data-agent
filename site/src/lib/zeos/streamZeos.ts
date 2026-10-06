@@ -167,6 +167,26 @@ let settling: Promise<void> | null = null;
  */
 export const ZEOS_ABORT_WATCHDOG_MS = 10_000;
 
+/**
+ * How long Stop lets a `step` batch already in flight finish before it
+ * interrupts the kernel call. A decode batch (`STEP_TICKS` ticks, ~72 ms each
+ * on an M1 Max) ends well within it, and its events are read as usual, so a
+ * demotion in that batch is saved with the message. Only a long prefill is
+ * cut short; then the batch's events are never seen, and the turn is saved as
+ * demoted if anything untrusted was in the run (`assumeCutShortDemoted`).
+ */
+export const ZEOS_STOP_GRACE_MS = 2_000;
+
+/**
+ * Consecutive `step` batches with no events (other than `waiting`) while the
+ * job is not waiting on `chat.user`, after which the engine counts as stuck:
+ * the job waits on a delivery this loop will never make, or ticks without
+ * doing anything. It is disposed like a crashed one (`engineDied`), so the
+ * turn ends with an error instead of looping forever. A prefill is one model
+ * call inside one tick, so a working kernel never comes near this.
+ */
+export const ZEOS_MAX_IDLE_STEPS = 64;
+
 interface Session {
   run: ZeosChatRun;
   key: string;
@@ -176,6 +196,8 @@ interface Session {
   toolCount: number;
   integrity: number;
   demotedBy: string | null;
+  /** Something on ring 3 (a tool result, a replayed untrusted turn) is in the run, so a step could demote. */
+  untrusted: boolean;
 }
 
 let session: Session | null = null;
@@ -237,14 +259,17 @@ async function readyEngine(): Promise<ZeosChatEngine> {
   return engine();
 }
 
-/** Forget engine `e` and its run, so the next message starts a fresh one. */
-function forgetEngine(e: ZeosChatEngine): boolean {
+/**
+ * Forget engine `e` and its run, so the next message starts a fresh one. A
+ * pending approval card would otherwise wait on a dead run forever: it is
+ * cancelled, so the turn behind it ends with `reason` (not a Deny).
+ */
+function forgetEngine(e: ZeosChatEngine, reason: Error): boolean {
   if (liveEngine !== e) return false;
   liveEngine = null;
   enginePromise = null;
   session = null;
-  // A pending approval card would otherwise wait on a dead run forever.
-  store.resetConversation();
+  store.resetConversation(reason);
   return true;
 }
 
@@ -255,7 +280,7 @@ function forgetEngine(e: ZeosChatEngine): boolean {
  * here the status says so and the next message starts a fresh engine.
  */
 function engineDied(e: ZeosChatEngine, reason: Error): void {
-  if (!forgetEngine(e)) return;
+  if (!forgetEngine(e, reason)) return;
   console.error('[zeos] the engine stopped:', reason);
   store.setStatus('error', `ZEOS stopped: ${reason.message}. Your next message restarts it.`, {
     backend: null,
@@ -286,9 +311,10 @@ function interruptForStop(): void {
   ]).then((outcome) => {
     clearTimeout(timer);
     if (settling === done) settling = null;
-    if (outcome === 'timeout' && forgetEngine(e)) {
+    const restarted = new Error('ZEOS was restarted after Stop');
+    if (outcome === 'timeout' && forgetEngine(e, restarted)) {
       console.warn(`[zeos] the kernel did not settle within ${ZEOS_ABORT_WATCHDOG_MS} ms of Stop; restarting it`);
-      e.dispose?.(new Error('ZEOS was restarted after Stop'));
+      e.dispose?.(restarted);
       store.setStatus('idle', '', { backend: null });
     }
   });
@@ -313,11 +339,11 @@ export function disposeZeos(why = 'model switched'): void {
   engineStart = null;
   const e = liveEngine;
   const wasLoaded = e !== null || enginePromise !== null;
-  if (e) forgetEngine(e);
+  if (e) forgetEngine(e, reason);
   enginePromise = null;
   session = null;
   settling = null;
-  store.resetConversation();
+  store.resetConversation(reason);
   e?.dispose?.(reason);
   if (wasLoaded) store.setStatus('idle', '', { backend: null });
 }
@@ -572,8 +598,19 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
   let lastTokenAt = 0;
   /** The turn in progress, so every exit path can save its trust (T5). */
   let live: { s: Session; text: ZeosTurnText } | null = null;
+  /** A `step` call is waiting for the kernel. */
+  let stepping = false;
+  /** A `step` call failed (Stop's interrupt, a crash, a dispose): the kernel may have run it unseen. */
+  let cutShort = false;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const onStop = (): void => {
+    if (!stepping) return interruptForStop();
+    graceTimer = setTimeout(() => {
+      if (stepping) interruptForStop();
+    }, ZEOS_STOP_GRACE_MS);
+  };
 
-  signal?.addEventListener('abort', interruptForStop, { once: true });
+  signal?.addEventListener('abort', onStop, { once: true });
   try {
     const eng = await untilAborted(readyEngine(), signal);
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -595,7 +632,15 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         thetaRead: thetaRead(),
         maskToolChoice,
       });
-      const s: Session = { run, key, segments: new Map(), toolCount: 0, integrity: TRUSTED, demotedBy: null };
+      const s: Session = {
+        run,
+        key,
+        segments: new Map(),
+        toolCount: 0,
+        integrity: TRUSTED,
+        demotedBy: null,
+        untrusted: false,
+      };
       session = s;
       const imported = buildZeosImport(prior);
       if (imported.length > 0) {
@@ -607,6 +652,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         // Each tools.results arrival is the next imported tool turn.
         const toolTurns = imported.filter((t) => t.role === 'tool');
         for (const e of events) {
+          if (e.type === 'arrived' && e.ring >= EXTERNAL) s.untrusted = true;
           if (e.type === 'arrived' && isResultPipe(e.pipe)) {
             const t = toolTurns[s.toolCount];
             s.toolCount += 1;
@@ -625,6 +671,8 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     live = { s, text };
     let calls = 0;
     let sessionFloor: number | null = null;
+    /** Batches in a row that moved nothing (`ZEOS_MAX_IDLE_STEPS`). */
+    let idleSteps = 0;
 
     /** A demotion is saved with the message at once, so a Stop right after it cannot lose it. */
     const applyDemotion = (e: Extract<ZeosEvent, { type: 'demoted' }>): void => {
@@ -679,7 +727,16 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
 
     for (;;) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const events = await s.run.step(STEP_TICKS);
+      let events: ZeosEvent[];
+      stepping = true;
+      try {
+        events = await s.run.step(STEP_TICKS);
+      } catch (err) {
+        cutShort = true;
+        throw err;
+      } finally {
+        stepping = false;
+      }
       let changed = false;
       for (const [i, e] of events.entries()) {
         if (signal?.aborted) {
@@ -702,6 +759,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             break;
           }
           case 'arrived':
+            if (e.ring >= EXTERNAL) s.untrusted = true;
             // The kernel's rule: a read sets the floor to the pipe's ring, except
             // that in attention mode tool results and history do not set it, and
             // a trusted result (declared `session_floor: false`) never does.
@@ -795,7 +853,18 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
         reportTrust(s);
       }
       if (import.meta.env.DEV) store.appendJournal(await s.run.journalLines());
-      if ((await s.run.waitingOn()) === 'chat.user') break;
+      const waiting = await s.run.waitingOn();
+      if (waiting === 'chat.user') break;
+      idleSteps = events.some((e) => e.type !== 'waiting') ? 0 : idleSteps + 1;
+      if (idleSteps >= ZEOS_MAX_IDLE_STEPS) {
+        const stuck = new Error(
+          `ZEOS made no progress in ${idleSteps} steps while the job waited on ${waiting ?? 'nothing'}`,
+        );
+        // As a crash: the status says so, and the next message starts a fresh engine.
+        eng.dispose?.(stuck);
+        engineDied(eng, stuck);
+        throw stuck;
+      }
     }
 
     text.finish();
@@ -835,6 +904,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     // (a demotion included) with whatever text it kept.
     if (live) {
       live.text.flushHeld();
+      if (cutShort) assumeCutShortDemoted(live.s);
       reportTrust(live.s);
       live = null;
     }
@@ -848,8 +918,23 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     }
     onError(err instanceof Error ? err : new Error(String(err)));
   } finally {
-    signal?.removeEventListener('abort', interruptForStop);
+    clearTimeout(graceTimer);
+    signal?.removeEventListener('abort', onStop);
   }
+}
+
+/**
+ * A `step` batch the loop never saw the end of (Stop past the grace period, a
+ * crash, a dispose) may have demoted the job: the kernel ran it, but its
+ * events are gone. If anything untrusted was in the run, save the turn as
+ * demoted rather than risk forgetting a demotion (T5); with nothing on ring 3
+ * there was nothing to demote it.
+ */
+function assumeCutShortDemoted(s: Session): void {
+  if (s.integrity >= EXTERNAL || !s.untrusted) return;
+  s.integrity = EXTERNAL;
+  s.demotedBy = 'a model step that was cut short (its attention was never read)';
+  if (session === s) store.setTrust({ integrity: s.integrity, demotedBy: s.demotedBy });
 }
 
 /**

@@ -1,13 +1,19 @@
 /**
  * The ZEOS engine's lifecycle around `streamZeos`: a crash after ready, Stop
- * while a kernel call is in flight (and the watchdog behind it), and
- * `disposeZeos` (a model switch), including mid-approval and mid-start.
+ * while a kernel call is in flight (the grace period, and the watchdog
+ * behind it), `disposeZeos` (a model switch), including mid-approval and
+ * mid-start, a kernel that stops making progress, and a page that is not
+ * cross-origin isolated. On every exit the turn's trust is saved (T5), a
+ * pending approval card dies with the engine (T6), and the next run starts
+ * demoted when the conversation was (T4).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_TOOLS } from '../agentTools';
 import type { StreamChatMessage } from '../streamChat';
 import { LOCAL_GEMMA_ENDPOINT, type LLMConfig } from '../../types/llm';
+import type { ChatTrust } from '../../types/chat';
 import type { ZeosChatEngine, ZeosChatRun, ZeosEvent } from './zeosChatEngine';
+import { NotCrossOriginIsolatedError } from './zeosHost';
 import {
   __setZeosEngineForTests,
   disposeZeos,
@@ -15,6 +21,9 @@ import {
   streamZeos,
   warmZeos,
   ZEOS_ABORT_WATCHDOG_MS,
+  ZEOS_MAX_IDLE_STEPS,
+  ZEOS_REFUSAL,
+  ZEOS_STOP_GRACE_MS,
 } from './streamZeos';
 import * as store from './zeosSessionStore';
 
@@ -46,9 +55,40 @@ const approval: ZeosEvent = {
   session_floor: 3,
 };
 
+const listInputs: ZeosEvent[] = [
+  { type: 'token', text: 'Checking.' },
+  { type: 'tool_call', call: 0, name: 'ListInputs', arguments: {}, sink: 'tools.read', results: 'tools.results' },
+];
+/** The ListInputs result arrives on ring 3: the run now holds something untrusted. */
+const arrived: ZeosEvent = { type: 'arrived', pipe: 'tools.results', segment: 7, ring: 3, integrity: 3 };
+const demoted: ZeosEvent = {
+  type: 'demoted',
+  from_integrity: 2,
+  to_integrity: 3,
+  because: [
+    {
+      segment: 7,
+      pipe: 'tools.results',
+      principal: 'tool',
+      tag: '',
+      ring: 3,
+      integrity: 3,
+      tokens: 4,
+      resident: true,
+      injected_at: 0,
+    },
+  ],
+};
+
 /** A step that never answers until the test settles or the kernel interrupts it. */
 const HANG = Symbol('hang');
-type Step = ZeosEvent[] | typeof HANG;
+/** A step that answers `events` after `ms` (a decode batch in progress). */
+interface Slow {
+  ms: number;
+  events: ZeosEvent[];
+}
+type Step = ZeosEvent[] | typeof HANG | Slow;
+const isSlow = (s: Step): s is Slow => typeof s === 'object' && !Array.isArray(s);
 
 /**
  * A kernel-like engine: every call goes through `call`, which `interrupt`
@@ -67,7 +107,7 @@ class FakeEngine implements ZeosChatEngine {
   private listeners = new Set<(reason: Error) => void>();
   constructor(private readonly steps: Step[][]) {}
 
-  call<T>(work: () => T | Promise<T>, hang = false): Promise<T> {
+  call<T>(work: () => T | Promise<T>, hang = false, delayMs = 0): Promise<T> {
     if (this.disposed) return Promise.reject(this.disposed);
     return new Promise<T>((resolve, reject) => {
       const fail = (e: Error) => {
@@ -76,7 +116,7 @@ class FakeEngine implements ZeosChatEngine {
       };
       this.pending.add(fail);
       if (hang) return;
-      Promise.resolve()
+      (delayMs > 0 ? new Promise((r) => setTimeout(r, delayMs)) : Promise.resolve())
         .then(work)
         .then(
           (v) => {
@@ -121,12 +161,14 @@ class FakeEngine implements ZeosChatEngine {
 class FakeRun implements ZeosChatRun {
   log: string[] = [];
   waiting: string | null = 'chat.user';
+  startIntegrity: number | undefined;
   constructor(
     private readonly engine: FakeEngine,
     private readonly steps: Step[],
   ) {}
-  importHistory() {
+  importHistory(_turns: unknown, startIntegrity?: number) {
     this.log.push('importHistory');
+    this.startIntegrity = startIntegrity;
     return this.engine.call(() => [] as ZeosEvent[]);
   }
   sendUser() {
@@ -137,15 +179,20 @@ class FakeRun implements ZeosChatRun {
   }
   step() {
     const next = this.steps.shift() ?? [];
-    this.log.push(next === HANG ? 'step(hang)' : 'step');
+    this.log.push(next === HANG ? 'step(hang)' : isSlow(next) ? 'step(slow)' : 'step');
     if (next === HANG) return this.engine.call(() => [] as ZeosEvent[], true);
-    return this.engine.call(() => {
-      for (const e of next) {
-        if (e.type === 'waiting') this.waiting = e.pipe;
-        if (e.type === 'approval_required' || e.type === 'tool_call') this.waiting = 'tools.results';
-      }
-      return next;
-    });
+    const events = isSlow(next) ? next.events : next;
+    return this.engine.call(
+      () => {
+        for (const e of events) {
+          if (e.type === 'waiting') this.waiting = e.pipe;
+          if (e.type === 'approval_required' || e.type === 'tool_call') this.waiting = 'tools.results';
+        }
+        return events;
+      },
+      false,
+      isSlow(next) ? next.ms : 0,
+    );
   }
   waitingOn() {
     return this.engine.call(() => this.waiting);
@@ -176,12 +223,14 @@ class FakeRun implements ZeosChatRun {
 
 interface Outcome {
   ui: string;
+  history: string;
   done: boolean;
   error: Error | null;
+  trust: ChatTrust[];
 }
 
 function send(messages: StreamChatMessage[], signal?: AbortSignal): Promise<Outcome> {
-  const out: Outcome = { ui: '', done: false, error: null };
+  const out: Outcome = { ui: '', history: '', done: false, error: null, trust: [] };
   return new Promise<Outcome>((resolve) => {
     void streamZeos({
       config: CONFIG,
@@ -192,6 +241,10 @@ function send(messages: StreamChatMessage[], signal?: AbortSignal): Promise<Outc
       onToken: (d) => {
         out.ui += d;
       },
+      onHistoryDelta: (d) => {
+        out.history += d;
+      },
+      onTrust: (t) => out.trust.push(t),
       onDone: () => {
         out.done = true;
         resolve(out);
@@ -274,21 +327,59 @@ describe('ZEOS engine lifecycle', () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
-  it('Stop returns at once while a kernel call is in flight, and keeps a kernel that settles', async () => {
+  /** Under fake timers: let the loop run until `cond`. */
+  const tick = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 50 && !cond(); i++) await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it('Stop interrupts a step still in flight after the grace period, and keeps a kernel that settles', async () => {
+    vi.useFakeTimers();
     scripts = [[[HANG]]];
     const ctrl = new AbortController();
     const turn = send([{ role: 'user', content: 'hi' }], ctrl.signal);
-    await until(() => engines[0]?.runs[0]?.log.includes('step(hang)'), 'the hanging step');
+    await tick(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'));
     ctrl.abort();
+    await vi.advanceTimersByTimeAsync(ZEOS_STOP_GRACE_MS - 1);
+    expect(engines[0].interrupted).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(engines[0].interrupted).toBe(1);
     const out = await turn;
     expect(out.done).toBe(true);
     expect(out.error).toBeNull();
-    expect(engines[0].interrupted).toBe(1);
+    // Nothing untrusted was in the run, so the lost batch could not have demoted it.
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 2 });
     // The ping settled, so the engine stays.
-    await until(() => engines[0].runs[0].log.includes('close'), 'the run to close');
-    await new Promise((r) => setTimeout(r, 5));
+    await tick(() => engines[0].runs[0].log.includes('close'));
+    expect(engines[0].runs[0].log).toContain('close');
     expect(engines[0].disposed).toBeNull();
     expect(isZeosLoaded()).toBe(true);
+  });
+
+  it('Stop waits for a decode batch in flight, so a demotion in it is saved with the message (T5)', async () => {
+    scripts = [[[listInputs, { ms: 30, events: [arrived, demoted, { type: 'token', text: ' More' }] }]]];
+    const ctrl = new AbortController();
+    const turn = send([{ role: 'user', content: 'list' }], ctrl.signal);
+    await until(() => !!engines[0]?.runs[0]?.log.includes('step(slow)'), 'the slow step');
+    ctrl.abort();
+    const out = await turn;
+    expect(out.done).toBe(true);
+    expect(engines[0].interrupted).toBe(0);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, demotedBy: 'ListInputs result #1' });
+  });
+
+  it('Stop past the grace period saves the turn as demoted when the lost batch could have demoted it (T5)', async () => {
+    vi.useFakeTimers();
+    scripts = [[[listInputs, [arrived, { type: 'token', text: 'Reading' }], HANG]]];
+    const ctrl = new AbortController();
+    const turn = send([{ role: 'user', content: 'list' }], ctrl.signal);
+    await tick(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'));
+    ctrl.abort();
+    await vi.advanceTimersByTimeAsync(ZEOS_STOP_GRACE_MS);
+    const out = await turn;
+    expect(out.done).toBe(true);
+    expect(engines[0].interrupted).toBe(1);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, ring: 3, toolRings: [3] });
+    expect(out.trust.at(-1)?.demotedBy).toContain('cut short');
   });
 
   it('Stop: a kernel that does not settle within the watchdog is reset, and the next message waits for it', async () => {
@@ -296,11 +387,10 @@ describe('ZEOS engine lifecycle', () => {
     scripts = [[[HANG]], [[reply('Fresh.')]]];
     const ctrl = new AbortController();
     const turn = send([{ role: 'user', content: 'hi' }], ctrl.signal);
-    for (let i = 0; i < 50 && !engines[0]?.runs[0]?.log.includes('step(hang)'); i++) {
-      await vi.advanceTimersByTimeAsync(0);
-    }
+    await tick(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'));
     engines[0].pingSettles = false;
     ctrl.abort();
+    await vi.advanceTimersByTimeAsync(ZEOS_STOP_GRACE_MS);
     expect((await turn).done).toBe(true);
 
     // A message sent right after Stop waits for the watchdog's verdict.
@@ -320,6 +410,111 @@ describe('ZEOS engine lifecycle', () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
+  it('a crash mid-step after an untrusted read saves the turn demoted, and the replay starts demoted (T5, T4)', async () => {
+    scripts = [[[listInputs, [arrived, { type: 'token', text: 'Reading' }], HANG]], [[reply('Again.')]]];
+    const turn = send([{ role: 'user', content: 'list' }]);
+    await until(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'), 'the hanging step');
+    engines[0].die(new Error('ZEOS model thread default crashed: GPU device lost'));
+    const out = await turn;
+    expect(out.error?.message).toContain('GPU device lost');
+    const trust = out.trust.at(-1)!;
+    expect(trust).toMatchObject({ integrity: 3, toolRings: [3] });
+
+    // The chat stores the failed turn as its error text, and replays only its
+    // demotion (mapMessagesForLLM): the fresh engine's run starts demoted.
+    const again = await send([
+      { role: 'user', content: 'list' },
+      { role: 'assistant', content: '', trust },
+      { role: 'user', content: 'again' },
+    ]);
+    expect(again.ui).toBe('Again.');
+    expect(engines[1].runs[0].startIntegrity).toBe(3);
+    expect(again.trust.at(-1)).toMatchObject({ integrity: 3 });
+  });
+
+  it('a crash while an approval waits ends the turn with the crash, not a denial, and kills the card (T6)', async () => {
+    scripts = [[[listInputs, [arrived, demoted, approval]]], [[[approval], reply('Not saved.')]]];
+    const turn = send([{ role: 'user', content: 'save a note' }]);
+    await until(() => store.getSnapshot().pending !== null, 'the approval card');
+    const staleId = store.getSnapshot().pending!.id;
+
+    engines[0].die(new Error('ZEOS kernel worker error: out of memory'));
+    expect(store.getSnapshot().pending).toBeNull();
+    const out = await turn;
+    expect(out.error?.message).toContain('out of memory');
+    // The user never declined: no refusal reached the model, the UI or history.
+    expect(engines[0].runs[0].log).not.toContain('deliverRefusal');
+    expect(out.ui).not.toContain(ZEOS_REFUSAL);
+    expect(out.history).not.toContain(ZEOS_REFUSAL);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, demotedBy: 'ListInputs result #1' });
+
+    // The next engine's card has a new id: the old card's late click does nothing.
+    const next = send([
+      { role: 'user', content: 'save a note' },
+      { role: 'assistant', content: '', trust: out.trust.at(-1) },
+      { role: 'user', content: 'again' },
+    ]);
+    await until(() => store.getSnapshot().pending !== null, 'the new card');
+    const fresh = store.getSnapshot().pending!;
+    expect(fresh.id).not.toBe(staleId);
+    store.approve(staleId);
+    store.deny(staleId);
+    expect(store.getSnapshot().pending?.id).toBe(fresh.id);
+    expect(engines[1].runs[0].log).not.toContain('deliverRefusal');
+    store.deny(fresh.id);
+    const done = await next;
+    expect(engines[1].runs[0].log).toContain('deliverRefusal');
+    expect(done.ui).toContain('Not saved.');
+  });
+
+  it('a kernel that stops making progress ends the turn and is restarted, instead of looping forever', async () => {
+    // The script runs out with the job runnable: every later step returns nothing.
+    scripts = [[[listInputs, [arrived]]], [[reply('Back.')]]];
+    const out = await send([{ role: 'user', content: 'list' }]);
+    expect(out.error?.message).toMatch(/no progress in \d+ steps/);
+    expect(engines[0].runs[0].log.filter((l) => l === 'step').length).toBe(2 + ZEOS_MAX_IDLE_STEPS);
+    expect(engines[0].disposed).not.toBeNull();
+    expect(store.getSnapshot().status).toBe('error');
+    expect(store.getSnapshot().error).toContain('next message restarts it');
+    // Its trust is saved like any other exit's.
+    expect(out.trust.at(-1)).toMatchObject({ toolRings: [3] });
+
+    const again = await send([
+      { role: 'user', content: 'list' },
+      { role: 'assistant', content: '' },
+      { role: 'user', content: 'again' },
+    ]);
+    expect(again.ui).toBe('Back.');
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
+
+  it('a job blocked on a delivery the loop never makes is a stall too', async () => {
+    scripts = [[[[{ type: 'waiting', pipe: 'tools.results' }]]]];
+    const out = await send([{ role: 'user', content: 'hi' }]);
+    expect(out.error?.message).toMatch(/no progress .* waited on tools\.results/);
+    expect(engines[0].disposed).not.toBeNull();
+  });
+
+  it('a page that is not cross-origin isolated reports it once per message, with no restart loop (D1)', async () => {
+    const notIsolated = vi.fn(async (): Promise<ZeosChatEngine> => {
+      throw new NotCrossOriginIsolatedError();
+    });
+    await __setZeosEngineForTests(notIsolated);
+    const out = await send([{ role: 'user', content: 'hi' }]);
+    expect(out.error).toBeInstanceOf(NotCrossOriginIsolatedError);
+    expect(store.getSnapshot().status).toBe('error');
+    expect(store.getSnapshot().error).toBe(out.error!.message);
+    expect(store.getSnapshot().error).not.toContain('restarts it');
+    expect(isZeosLoaded()).toBe(false);
+    // Nothing retries on its own.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(notIsolated).toHaveBeenCalledTimes(1);
+    // The next message tries once more, and fails the same way.
+    const again = await send([{ role: 'user', content: 'hi' }]);
+    expect(again.error).toBeInstanceOf(NotCrossOriginIsolatedError);
+    expect(notIsolated).toHaveBeenCalledTimes(2);
+  });
+
   it('disposeZeos mid-approval cancels the card, ends the turn and frees the engine', async () => {
     scripts = [[[[approval]]]];
     const turn = send([{ role: 'user', content: 'save a note' }]);
@@ -333,6 +528,20 @@ describe('ZEOS engine lifecycle', () => {
     expect(isZeosLoaded()).toBe(false);
     expect(store.getSnapshot().status).toBe('idle');
     expect(store.getSnapshot().integrity).toBeNull();
+    // Unloading is not the user declining (T6), and the turn's trust is saved (T5).
+    expect(engines[0].runs[0].log).not.toContain('deliverRefusal');
+    expect(out.ui).not.toContain(ZEOS_REFUSAL);
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 2 });
+  });
+
+  it('disposeZeos mid-step after an untrusted read saves the turn as demoted (T5)', async () => {
+    scripts = [[[listInputs, [arrived, { type: 'token', text: 'Reading' }], HANG]]];
+    const turn = send([{ role: 'user', content: 'list' }]);
+    await until(() => !!engines[0]?.runs[0]?.log.includes('step(hang)'), 'the hanging step');
+    disposeZeos('switched to Gemma 4 E2B');
+    const out = await turn;
+    expect(out.error?.message).toContain('unloaded');
+    expect(out.trust.at(-1)).toMatchObject({ integrity: 3, toolRings: [3] });
   });
 
   it('disposeZeos while the engine starts disposes it once it arrives', async () => {

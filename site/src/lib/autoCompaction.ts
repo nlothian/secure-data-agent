@@ -41,13 +41,23 @@ export function buildCompactionContext(messages: ChatMessage[]): string {
   return summaries.length ? COMPACTION_HEADER + summaries.join('\n\n') : '';
 }
 
+/**
+ * A failed turn whose recorded trust says it was demoted (ZEOS Qwen: the
+ * engine crashed or was unloaded after the job read untrusted content). Its
+ * text is the error, so it is not replayed, but its demotion must be: the
+ * next run starts demoted (`importStartIntegrity`).
+ */
+const isDemotedFailure = (m: ChatMessage): boolean =>
+  !!m.error && m.role === 'assistant' && (m.trust?.integrity ?? 0) >= 3;
+
 export function mapMessagesForLLM(messages: ChatMessage[]): ConvTurn[] {
   return messages
     .filter(
       (m): m is ChatMessage & { role: 'user' | 'assistant' } =>
-        !m.error && m.role !== 'system' && m.kind !== 'compaction',
+        (!m.error || isDemotedFailure(m)) && m.role !== 'system' && m.kind !== 'compaction',
     )
     .map((m) => {
+      if (m.error) return { role: m.role, content: '', trust: m.trust };
       if (m.role !== 'assistant') return { role: m.role, content: m.content };
       const trust = m.trust ? { trust: m.trust } : {};
       // historyContent (Gemma replay) never contains the compacted marker —
