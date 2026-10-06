@@ -4,6 +4,8 @@ import type { LLMConfig } from '../types/llm';
 import { isLocalGemmaEndpoint } from '../types/llm';
 import { runAgentTool, type AgentToolSpec } from './agentTools';
 import { clampToolResultSize } from './toolResultLimits';
+import { RepeatedCallGuard, repeatedCallNote } from './repeatedToolCalls';
+import { classifyToolCall } from './zeos/zeosToolClasses';
 
 export interface StreamChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -173,6 +175,10 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
     onUsage?.({ input: lastInput, output: lastOutput, tps });
   };
 
+  // Calls made this user message since the last effect: an identical repeat
+  // gets a note instead of running again (as the local loops do).
+  const repeats = new RepeatedCallGuard();
+
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       if (signal?.aborted) {
@@ -224,8 +230,16 @@ export async function streamChat(opts: StreamChatOptions): Promise<void> {
         }
         const input = safeParseJson(tu.inputJson);
         emit(`\n\n→ ${tu.name}(${tu.inputJson || '{}'})\n`);
-        const result = await dispatch(tu.name, input, signal);
-        const resultStr = clampToolResultSize(tu.name, JSON.stringify(result));
+        let resultStr: string;
+        if (repeats.isRepeat(tu.name, input)) {
+          resultStr = repeatedCallNote(tu.name);
+        } else {
+          // Anything but a read may change what a repeated read returns.
+          const args = input && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;
+          repeats.record(tu.name, input, classifyToolCall(tu.name, args) !== 'read');
+          const result = await dispatch(tu.name, input, signal);
+          resultStr = clampToolResultSize(tu.name, JSON.stringify(result));
+        }
         emit(`← ${resultStr}\n\n`);
         resultBlocks.push({ type: 'tool_result', toolUseId: tu.id, content: resultStr });
       }

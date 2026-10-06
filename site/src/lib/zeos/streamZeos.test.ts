@@ -704,10 +704,11 @@ describe('streamZeos', () => {
   });
 
   it('checks the cap before an approval card, so the user is not asked about a call past it (C7)', async () => {
+    // Each call differs, or every one after the first would be a repeat.
     const effect = (call: number): ZeosEvent[] => [
-      ...tokens(callText('WriteLines', { path: '/scratchpad/x', content: 'x' })),
+      ...tokens(callText('WriteLines', { path: `/scratchpad/x${call}`, content: 'x' })),
       {
-        type: 'approval_required', call, name: 'WriteLines', arguments: { path: '/scratchpad/x', content: 'x' },
+        type: 'approval_required', call, name: 'WriteLines', arguments: { path: `/scratchpad/x${call}`, content: 'x' },
         sink: 'tools.effect', results: 'tools.results', fault: 'privilege_fault', detail: '',
         integrity: 3, effective_integrity: 3, session_floor: 3,
       },
@@ -726,6 +727,133 @@ describe('streamZeos', () => {
     expect(c.maxed).toBe(true);
     expect(cards).toBe(10);
     expect(engine.runs[0].log.filter((l) => l[0] === 'deliverRefusal').length).toBe(10);
+  });
+
+  describe('identical repeated calls', () => {
+    const REPEAT_NOTE = (name: string) =>
+      JSON.stringify({
+        note: `You already ran ${name} with these exact arguments; its result is above. Answer from it, or make a different call.`,
+      });
+    const SQL = { sql: 'SELECT * FROM reviews' };
+    const readCall = (call: number, name = 'RunSQL', args: Record<string, string> = SQL): ZeosEvent[] => [
+      ...tokens(callText(name, args)),
+      { type: 'tool_call', call, name, arguments: args, sink: 'tools.read', results: 'tools.results' },
+    ];
+    const effectCall = (call: number, args: Record<string, string>, sink: 'tools.effect' = 'tools.effect'): ZeosEvent[] => [
+      ...tokens(callText('WriteLines', args)),
+      { type: 'tool_call', call, name: 'WriteLines', arguments: args, sink, results: 'tools.results' },
+    ];
+    const heldEffect = (call: number, args: Record<string, string>): ZeosEvent[] => [
+      ...tokens(callText('WriteLines', args)),
+      {
+        type: 'approval_required', call, name: 'WriteLines', arguments: args,
+        sink: 'tools.effect', results: 'tools.results', fault: 'privilege_fault', detail: '',
+        integrity: 3, effective_integrity: 3, session_floor: 3,
+      },
+    ];
+    const answer: ZeosEvent[] = [
+      ...tokens('Done.'),
+      { type: 'reply', text: 'Done.', reasoning: null, raw: '' },
+      { type: 'waiting', pipe: 'chat.user' },
+    ];
+    const deliveries = (run: FakeRun) => run.log.filter((l) => l[0] === 'deliverToolResult' || l[0] === 'deliverRefusal');
+    const toolLog = () => (globalThis as { __zeosToolLog?: { name: string; how: string }[] }).__zeosToolLog ?? [];
+    beforeEach(() => {
+      delete (globalThis as { __zeosToolLog?: unknown }).__zeosToolLog;
+    });
+
+    it('runs a call once and answers an identical repeat with the note, on ring 3', async () => {
+      // Key order does not matter: the arguments are compared canonically.
+      const swapped = { register_as: 'r', sql: 'SELECT 1' };
+      const ordered = { sql: 'SELECT 1', register_as: 'r' };
+      await useEngine([[readCall(0), readCall(1), readCall(2, 'RunSQL', ordered), readCall(3, 'RunSQL', swapped), answer]]);
+      const c = await send([{ role: 'user', content: 'summarise' }]).done;
+      expect(c.error).toBeNull();
+      expect(c.done).toBe(true);
+      expect(c.maxed).toBeUndefined();
+      expect(c.dispatched).toEqual([
+        ['RunSQL', SQL],
+        ['RunSQL', ordered],
+      ]);
+      expect(deliveries(engine.runs[0])).toEqual([
+        ['deliverToolResult', '"ok"', false],
+        ['deliverToolResult', REPEAT_NOTE('RunSQL'), false],
+        ['deliverToolResult', '"ok"', false],
+        ['deliverToolResult', REPEAT_NOTE('RunSQL'), false],
+      ]);
+      expect(c.ui).toContain(`← ${REPEAT_NOTE('RunSQL')}`);
+      expect(c.history).toContain('<|tool_response>response:RunSQL');
+      expect(toolLog().map((e) => e.how)).toEqual(['read', 'repeated', 'read', 'repeated']);
+    });
+
+    it('never shows an approval card for a repeated effect, approved or denied', async () => {
+      const a = { path: '/scratchpad/a.txt', content: 'a' };
+      const b = { path: '/scratchpad/b.txt', content: 'b' };
+      await useEngine([[heldEffect(0, a), heldEffect(1, a), heldEffect(2, b), heldEffect(3, b), answer]]);
+      const decisions = [true, false];
+      let cards = 0;
+      const unsubscribe = store.subscribe(() => {
+        const p = store.getSnapshot().pending;
+        if (p) {
+          const approve = decisions[cards++];
+          queueMicrotask(() => (approve ? store.approve(p.id) : store.deny(p.id)));
+        }
+      });
+      const c = await send([{ role: 'user', content: 'write' }]).done;
+      unsubscribe();
+      expect(c.error).toBeNull();
+      expect(cards).toBe(2);
+      expect(c.dispatched).toEqual([['WriteLines', a]]);
+      expect(deliveries(engine.runs[0])).toEqual([
+        ['deliverToolResult', '"ok"', false],
+        ['deliverRefusal', REPEAT_NOTE('WriteLines')],
+        ['deliverRefusal', ZEOS_REFUSAL],
+        ['deliverRefusal', REPEAT_NOTE('WriteLines')],
+      ]);
+      expect(toolLog().map((e) => e.how)).toEqual(['approved', 'repeated', 'denied', 'repeated']);
+    });
+
+    it('still counts repeats toward the cap', async () => {
+      await useEngine([[...Array.from({ length: 30 }, (_, i) => readCall(i))]]);
+      const c = await send([{ role: 'user', content: 'go' }]).done;
+      expect(c.maxed).toBe(true);
+      expect(c.ui.endsWith('Reached max tool iterations')).toBe(true);
+      expect(c.dispatched).toHaveLength(1);
+      expect(deliveries(engine.runs[0])).toHaveLength(10);
+      expect(toolLog().filter((e) => e.how === 'repeated')).toHaveLength(9);
+    });
+
+    it('starts the record again after an effect runs', async () => {
+      const w = { path: '/scratchpad/q.sql', content: 'x' };
+      await useEngine([[readCall(0), effectCall(1, w), readCall(2), readCall(3), answer]]);
+      const c = await send([{ role: 'user', content: 'go' }]).done;
+      expect(c.error).toBeNull();
+      // The read after the effect runs again; the one after that is a repeat.
+      expect(c.dispatched).toEqual([
+        ['RunSQL', SQL],
+        ['WriteLines', w],
+        ['RunSQL', SQL],
+      ]);
+      expect(toolLog().map((e) => e.how)).toEqual(['read', 'effect', 'read', 'repeated']);
+    });
+
+    it('re-runs a repeated bundled skill card, whose result is on ring 2', async () => {
+      const skill = (call: number): ZeosEvent[] => [
+        ...tokens(callText('CallSkill', { skill: 'sql' })),
+        { type: 'tool_call', call, name: 'CallSkill', arguments: { skill: 'sql' }, sink: 'tools.read', results: 'tools.results.trusted' },
+      ];
+      await useEngine([[skill(0), skill(1), answer]]);
+      const c = await send([{ role: 'user', content: 'go' }]).done;
+      expect(c.error).toBeNull();
+      const results = deliveries(engine.runs[0]);
+      expect(results).toHaveLength(2);
+      for (const r of results) {
+        expect(r[0]).toBe('deliverToolResult');
+        expect(r[2]).toBe(true);
+        expect(r[1]).not.toContain('You already ran');
+      }
+      expect(toolLog().map((e) => e.how)).toEqual(['read', 'read']);
+    });
   });
 
   it('ends a turn at the call cap as demoted once a ring-3 result was delivered (N4)', async () => {

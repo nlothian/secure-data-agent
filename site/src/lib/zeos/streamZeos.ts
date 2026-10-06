@@ -26,8 +26,11 @@
  * journal (`ui.masked`). An
  * `approval_required` event (the kernel refused a write to `tools.effect` for
  * privilege) shows the approval card: Approve runs the call under the user's
- * authority and delivers its result, Deny delivers a refusal. The turn ends
- * when the job waits on `chat.user` again.
+ * authority and delivers its result, Deny delivers a refusal. A call
+ * identical to one already made this message, with no effect run since, is
+ * not run (or put to the user) again: it gets a constant note on ring 3
+ * (`RepeatedCallGuard`). The turn ends when the job waits on `chat.user`
+ * again.
  */
 import { getFeatures } from '../agentFeaturesStore';
 import { runAgentTool, type AgentToolSpec } from '../agentTools';
@@ -51,6 +54,7 @@ import {
 } from '../localLlm/toolPrompt';
 import { isAbortError, type StreamChatMessage, type StreamChatOptions } from '../streamChat';
 import { clampToolResultSize } from '../toolResultLimits';
+import { RepeatedCallGuard, repeatedCallNote } from '../repeatedToolCalls';
 import type { ChatTrust } from '../../types/chat';
 import { LOCAL_GEMMA_ENDPOINT } from '../../types/llm';
 import { QWEN_SAMPLING } from '../localLlm/llmWorkerProtocol';
@@ -733,6 +737,13 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     let pendingResultLabel: string | null = null;
     /** What the latest arrival was, for a spoof alarm on it. */
     let lastResultLabel: string | null = null;
+    /**
+     * The calls made this user message since the last effect ran: an
+     * identical repeat gets `repeatedCallNote` instead of running again (or
+     * of an approval card), on ring 3 like any result. It still counts
+     * toward the cap.
+     */
+    const repeats = new RepeatedCallGuard();
 
     /** A call whose name was chosen masked: its result will be the next `toolRings` entry. */
     const noteMasked = (e: { name: string; name_masked?: boolean; name_hidden?: number[] }): void => {
@@ -748,6 +759,9 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
     ): Promise<void> => {
       logToolCall({ name, args, how });
       const argsJson = JSON.stringify(args);
+      // An effect that ran (from tools.effect, or approved) may change what a
+      // repeated read returns, so the record restarts after it.
+      repeats.record(name, args, how !== 'read');
       const result = await dispatch(name, args, how, signal);
       const resultStr = clampToolResultSize(name, JSON.stringify(result));
       text.toolExchange(name, argsJson, resultStr);
@@ -757,6 +771,28 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
       // Ring 3 from the moment it is handed over, before its arrival is seen.
       if (!trusted) s.untrusted = true;
       await s.run.deliverToolResult(toolResultForZeos(resultStr), trusted);
+    };
+
+    /**
+     * An identical repeat: the note goes in the result's place, as a result
+     * on ring 3 (a call on a tools.read/tools.effect sink) or as the refusal
+     * of a call the kernel held for approval. Ring 3 cannot launder trust:
+     * ZEOS refuses a delivery whose ring disagrees with the call's pipe, and
+     * a trusted result (a bundled skill card) is re-run instead.
+     */
+    const deliverRepeatNote = async (
+      name: string,
+      args: Record<string, unknown>,
+      as: 'result' | 'refusal',
+    ): Promise<void> => {
+      logToolCall({ name, args, how: 'repeated' });
+      const note = repeatedCallNote(name);
+      text.toolExchange(name, JSON.stringify(args), note);
+      s.toolCount += 1;
+      pendingResultLabel = `${name} repeat note #${s.toolCount}`;
+      s.untrusted = true;
+      if (as === 'result') await s.run.deliverToolResult(toolResultForZeos(note), false);
+      else await s.run.deliverRefusal(toolResultForZeos(note));
     };
 
     for (;;) {
@@ -815,6 +851,10 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             noteMasked(e);
             await s.run.drain(e.sink);
             if (await overCap()) return;
+            if (repeats.isRepeat(e.name, e.arguments) && !isTrustedToolResult(e.name, e.arguments)) {
+              await deliverRepeatNote(e.name, e.arguments, 'result');
+              break;
+            }
             await runCall(e.name, e.arguments, e.sink === 'tools.effect' ? 'effect' : 'read');
             break;
           }
@@ -824,6 +864,11 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
             sessionFloor = e.session_floor;
             store.setTrust({ integrity: e.integrity, sessionFloor: e.session_floor, demotedBy: s.demotedBy });
             if (await overCap()) return;
+            // Never ask the user about an identical repeat (approved or denied before).
+            if (repeats.isRepeat(e.name, e.arguments)) {
+              await deliverRepeatNote(e.name, e.arguments, 'refusal');
+              break;
+            }
             const approved = await store.requestApproval(
               {
                 call: e.call,
@@ -840,6 +885,7 @@ export async function streamZeos(opts: StreamChatOptions): Promise<void> {
               await runCall(e.name, e.arguments, 'approved');
             } else {
               logToolCall({ name: e.name, args: e.arguments, how: 'denied' });
+              repeats.record(e.name, e.arguments);
               const refusal = JSON.stringify({ error: ZEOS_REFUSAL });
               text.toolExchange(e.name, JSON.stringify(e.arguments), refusal);
               s.toolCount += 1;
@@ -1007,12 +1053,13 @@ async function recordAttention(run: ZeosChatRun): Promise<void> {
 /**
  * One tool call the loop settled: run from `tools.read` or `tools.effect`
  * (the kernel let it land), run on the user's approval after the kernel
- * refused it, or denied.
+ * refused it, denied, or answered with the repeat note without running
+ * (`repeated`: identical to a call already made since the last effect).
  */
 export interface ZeosToolLogEntry {
   name: string;
   args: Record<string, unknown>;
-  how: ZeosCallHow | 'denied';
+  how: ZeosCallHow | 'denied' | 'repeated';
 }
 
 /** Dev/e2e: every settled tool call, on `window.__zeosToolLog`. */

@@ -1,6 +1,8 @@
 import { runAgentTool } from '../agentTools';
 import { isAbortError, type StreamChatOptions } from '../streamChat';
 import { clampToolResultSize, estimateResultTokens } from '../toolResultLimits';
+import { RepeatedCallGuard, repeatedCallNote } from '../repeatedToolCalls';
+import { classifyToolCall } from '../zeos/zeosToolClasses';
 import { LOCAL_GEMMA_CONTEXT_WINDOW } from '../contextWindow';
 import { compactConversation } from '../compactConversation';
 import { COMPACTION_HEADER } from '../autoCompaction';
@@ -182,6 +184,10 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       })),
   );
 
+  // Calls made this user message since the last effect: an identical repeat
+  // gets a note instead of running again, and still counts as an iteration.
+  const repeats = new RepeatedCallGuard();
+
   try {
     await ensureLoaded(modelId);
 
@@ -349,14 +355,28 @@ export async function streamLocalGemma(opts: StreamChatOptions): Promise<void> {
       }
 
       let inputObj: unknown;
+      let parsedArgs = true;
       try {
         inputObj = JSON.parse(tc.argsJson);
       } catch {
         inputObj = {};
+        parsedArgs = false;
       }
       emit(`\n\n→ ${tc.name}(${tc.argsJson || '{}'})\n`);
-      const result = await dispatch(tc.name, inputObj, signal);
-      const resultStr = clampToolResultSize(tc.name, JSON.stringify(result));
+      // Unparseable arguments are keyed by their text, so two different
+      // malformed calls are not taken for the same `{}`.
+      const keyArgs = parsedArgs ? inputObj : tc.argsJson;
+      let resultStr: string;
+      if (repeats.isRepeat(tc.name, keyArgs)) {
+        resultStr = repeatedCallNote(tc.name);
+      } else {
+        // Anything but a read (by the ZEOS classes; an unknown tool is an
+        // effect) may change what a repeated read returns: the record restarts.
+        const args = inputObj && typeof inputObj === 'object' ? (inputObj as Record<string, unknown>) : undefined;
+        repeats.record(tc.name, keyArgs, classifyToolCall(tc.name, args) !== 'read');
+        const result = await dispatch(tc.name, inputObj, signal);
+        resultStr = clampToolResultSize(tc.name, JSON.stringify(result));
+      }
 
       // Pre-emptive compaction: if appending this tool result would push the
       // next prompt past the context window, summarise older conv entries
