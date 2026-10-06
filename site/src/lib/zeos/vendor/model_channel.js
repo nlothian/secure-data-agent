@@ -1,5 +1,5 @@
 // Vendored from ZEOS packages/zeos-browser/web/model_channel.js
-// at 38ab62f04dfaa7791a30cc630525157190b20c5c by site/scripts/zeos-sync.mjs.
+// at 28063254552caf21a8f261920ce9c1dcd8ac7ddf by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI

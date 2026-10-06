@@ -216,10 +216,10 @@ RunPython worker.
   `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos npm run zeos:sync`.
   The sync records `dirty: true` if that checkout holds uncommitted edits
   under `src`, `packages` or `demo`, which it would build in.
-  The spoof-notice change (`spoof_notice: false` for the chat agent) is on
-  the fork's branch `fix/chat-spoof-notice` (38ab62f), synced from its own
-  worktree `/Users/nlothian/dev/github/metacognitionai/zeos-spoof-notice`
-  and not yet on `main`; once it is merged there, re-sync from `main`.
+  When that checkout holds unrelated uncommitted work, sync from a clean
+  clone of the fork's `main` instead (`git clone --branch main
+  git@github.com:nlothian/zeos-webgpu-experiments.git <dir>`, then
+  `ZEOS_REPO=<dir>`); `SOURCE.json` then records that clone's path.
 - The same script vendors ZEOS's JS from `packages/zeos-browser/web`
   (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
   `transformers_worker.js`, and `model_cache.js`, `opfs_store.js`,
