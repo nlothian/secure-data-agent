@@ -111,13 +111,41 @@ export const SQL_EXTERNAL_WORDS = [
 ] as const;
 
 /**
+ * File extensions DuckDB (or an extension it may load) reads a table name
+ * ending in as a file: a replacement scan turns `FROM 'x.csv'`, `FROM
+ * "x.parquet"` and `FROM x.csv` into a file read. Core DuckDB 1.4.3 does so
+ * for csv, tsv, parquet, json, jsonl, ndjson and xlsx; the rest are formats
+ * extensions read (avro, arrow, spatial's GDAL formats, sqlite, attached
+ * databases) or common data files, listed so a later extension cannot turn
+ * them into reads.
+ */
+const SQL_FILE_EXTENSIONS = [
+  'csv', 'tsv', 'tbl', 'txt', 'dat', 'parquet', 'json', 'jsonl', 'ndjson', 'geojson', 'xlsx',
+  'xls', 'arrow', 'ipc', 'feather', 'avro', 'orc', 'db', 'duckdb', 'sqlite', 'sqlite3', 'shp',
+  'gpkg', 'fgb', 'kml', 'gpx', 'osm', 'pbf',
+] as const;
+/** Compression suffixes DuckDB accepts after a file extension (`x.csv.gz`). */
+const SQL_COMPRESSION_EXTENSIONS = ['gz', 'gzip', 'zst', 'zstd', 'bz2', 'xz', 'lz4', 'snappy', 'zip'] as const;
+
+/**
  * Extensions a string or quoted identifier must not end with: DuckDB reads
  * `FROM 'x.csv'` or `FROM "x.parquet"` as a file (a replacement scan), with
  * an optional compression suffix.
  */
 const SQL_FILE_SUFFIX =
-  '\\.(?:csv|tsv|tbl|txt|dat|parquet|json|jsonl|ndjson|geojson|xlsx|xls|arrow|ipc|feather|avro|orc|db|duckdb|sqlite|sqlite3)' +
-  '(?:\\.(?:gz|gzip|zst|zstd|bz2|xz|lz4|snappy|zip))?';
+  `\\.(?:${SQL_FILE_EXTENSIONS.join('|')})` + `(?:\\.(?:${SQL_COMPRESSION_EXTENSIONS.join('|')}))?`;
+
+/**
+ * A `.` that qualifies a name must not be followed (past whitespace and
+ * comments) by a part, bare or quoted, that is a file extension or a
+ * compression suffix: DuckDB joins `catalog.schema.table` back into a path
+ * for its replacement scans, so `FROM data.csv`, `FROM "data"."csv"`, `FROM
+ * "sub/data".csv`, `FROM data."csv.gz"` and `FROM data.csv.gz` all read a
+ * file. Ordinary qualified
+ * names (`t.col`, `main.t`) stay reads; a column literally named `csv`
+ * reached as `t.csv` is an effect, which only asks the user.
+ */
+const SQL_FILE_PART = [...SQL_FILE_EXTENSIONS, ...SQL_COMPRESSION_EXTENSIONS].join('|');
 
 // The lexical units of a statement, as DuckDB splits them. Anything this does
 // not recognise (a backslash, a `$`, an unterminated quote, a nested comment)
@@ -148,25 +176,33 @@ const SQL_STRING =
  * quoted name like a bare one (`"glob"('*')`, `main."read_csv"(…)`,
  * `"GETENV"('HOME')` all run), so the name must not be a write keyword or an
  * external word either (compared whole and case-insensitively; `""` cannot
- * spell any of them). And it must not be followed, past whitespace and
- * comments, by `(`: that calls it as a function, and a quoted name is not one
- * the model needs for a read.
+ * spell any of them). Nor one that spells a path or a glob (`/`, `\\`, `*`,
+ * `?` or `[` anywhere): DuckDB looks for a file by that name (`FROM
+ * "sub/x"`), and an alias like `"a/b"` is an effect too, which only asks the
+ * user. And it must not be followed, past whitespace and comments, by `(`:
+ * that calls it as a function, and a quoted name is not one the model needs
+ * for a read.
  */
 const SQL_QUOTED_ID =
   `(?<!&)"(?!(?:${SQL_FORBIDDEN_WORDS})"(?!"))` +
-  '(?!(?:[^"]|"")*?://)(?!(?:[^"]|"")*' + SQL_FILE_SUFFIX + '"(?!"))(?:[^"]|"")*"(?!")' +
+  '(?!(?:[^"]|"")*?[/\\\\*?\\[])(?!(?:[^"]|"")*' + SQL_FILE_SUFFIX + '"(?!"))(?:[^"]|"")*"(?!")' +
   `(?!${SQL_GAP}*\\()`;
 /** A whole bare word (identifier, keyword or number) that is not a write keyword or external access. */
 const SQL_WORD =
   `${NOT_WORD_BEFORE}(?!(?:${SQL_FORBIDDEN_WORDS})${NOT_WORD_AFTER})` +
   `[A-Za-z0-9_]+${NOT_WORD_AFTER}`;
-/** Any other character but `;`, a quote, `$` or a backslash; `-` and `/` when they open no comment. */
-const SQL_OTHER = '[^;\'"A-Za-z0-9_$\\\\/-]|-(?!-)|/(?!\\*)';
+/** A `.` not followed by a file extension as the next part of a name (see `SQL_FILE_PART`). */
+const SQL_DOT = `\\.(?!${SQL_GAP}*(?:(?:${SQL_FILE_PART})${NOT_WORD_AFTER}|"(?:${SQL_FILE_PART})(?:"(?!")|\\.)))`;
+/**
+ * Any other character but `;`, a quote, `$` or a backslash; `-` and `/` when
+ * they open no comment, `.` as `SQL_DOT`.
+ */
+const SQL_OTHER = `[^;'"A-Za-z0-9_$\\\\/.-]|-(?!-)|/(?!\\*)|${SQL_DOT}`;
 const SQL_UNIT = `(?:${SQL_STRING}|${SQL_QUOTED_ID}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT}|${SQL_WORD}|${SQL_OTHER})`;
 /** As `SQL_UNIT`, without `=` or parentheses: a reporting PRAGMA's argument list. */
 const SQL_PRAGMA_ARG_UNIT =
   `(?:${SQL_STRING}|${SQL_QUOTED_ID}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT}|${SQL_WORD}|` +
-  '[^;\'"A-Za-z0-9_$\\\\/=()-]|-(?!-)|/(?!\\*))';
+  `[^;'"A-Za-z0-9_$\\\\/.=()-]|-(?!-)|/(?!\\*)|${SQL_DOT})`;
 
 /**
  * One read-only SQL statement: leading whitespace and comments, then a read
