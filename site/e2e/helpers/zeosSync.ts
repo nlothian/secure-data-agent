@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { test as base } from '@playwright/test';
+import type { test as base } from '../fixtures';
 
 /** Whether `npm run zeos:sync` has populated public/zeos (generated, gitignored). */
 export const ZEOS_SYNCED = fs.existsSync(

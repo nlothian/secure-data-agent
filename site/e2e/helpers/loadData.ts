@@ -121,6 +121,20 @@ export async function runSqlDirect(page: import('@playwright/test').Page, sql: s
   }, sql);
 }
 
+/**
+ * Start DuckDB-WASM (fetch and compile the 34 MB wasm, spawn its worker) and
+ * wait until it is up. Specs that hold a sandbox load to a tight timeout call
+ * this first, so the timeout measures the load, not DuckDB's cold start, which
+ * every test pays (each one gets a fresh page) and which takes several
+ * seconds when the e2e workers run in parallel.
+ */
+export async function warmDuckDB(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(async () => {
+    const { getDuckDB } = await import('/src/lib/duckdb.ts');
+    await getDuckDB();
+  });
+}
+
 /** The 2-data-row CSV written to the seeded sandbox `mini.csv`. */
 export const MINI_CSV = 'a,b\n1,2\n3,4\n';
 

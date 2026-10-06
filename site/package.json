@@ -11,6 +11,7 @@
     "astro": "astro",
     "test": "vitest run",
     "test:e2e": "playwright test --project=chromium",
+    "test:e2e:fast": "playwright test --project=chromium --grep-invert \"@slow|@network\"",
     "test:llm_tests": "GDA_E2E_LLM=1 playwright test --project=llm",
     "models:fetch": "node scripts/fetch-models.mjs",
     "models:manifest": "node scripts/manifest-from-hub.mjs",

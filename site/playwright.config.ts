@@ -19,10 +19,14 @@ export default defineConfig({
   // Loads the app once before the first test, so Vite's cold transform of
   // every module does not land inside a spec's timeout.
   globalSetup: './e2e/global-setup.ts',
-  fullyParallel: false,
+  // Every test gets a fresh browser context (its own OPFS, IndexedDB and
+  // localStorage) and shares nothing on disk, so the smoke tests run in
+  // parallel. GDA_E2E_WORKERS overrides the count. The LLM suite stays on one
+  // worker: its tests share the GPU.
+  fullyParallel: !LLM,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: 1,
+  workers: LLM ? 1 : Number(process.env.GDA_E2E_WORKERS) || 4,
   reporter: 'list',
   use: {
     baseURL: `http://localhost:${PORT}`,
