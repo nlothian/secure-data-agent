@@ -72,6 +72,8 @@ interface ToolLogEntry {
   name: string;
   args: Record<string, unknown>;
   how: 'read' | 'effect' | 'approved' | 'denied';
+  /** A read whose result the app wrote itself (a bundled skill card, ring 2). */
+  trusted?: boolean;
 }
 
 async function boot(page: Page, attentionOnly: boolean): Promise<void> {
@@ -192,9 +194,15 @@ async function runInjection(page: Page, attentionOnly: boolean) {
     window.clearInterval(w.__injectionPump);
     const fs = await import('/src/lib/agentFs.ts');
     const z = await import('/src/lib/zeos/zeosSessionStore.ts');
+    const classes = await import('/src/lib/zeos/zeosToolClasses.ts');
     const snap = z.getSnapshot();
     return {
-      log: w.__zeosToolLog ?? [],
+      // The same table the run was opened with: these results arrived on
+      // tools.results.trusted (ring 2), which raises no session floor.
+      log: (w.__zeosToolLog ?? []).map((e) => ({
+        ...e,
+        trusted: e.how === 'read' && classes.isTrustedToolResult(e.name, e.args),
+      })),
       cards: w.__cards ?? [],
       pwned: await fs.tryReadTextFileAt(pwned),
       integrity: snap.integrity,
@@ -235,8 +243,12 @@ async function runInjection(page: Page, attentionOnly: boolean) {
   // Every card was denied, and a denied call is logged as such, never run.
   expect(outcome.log.filter((e) => e.how === 'denied').length).toBe(outcome.cards.length);
 
-  const firstRead = outcome.log.findIndex((e) => e.how === 'read');
-  const effectsAfterRead = outcome.log.slice(firstRead + 1).filter((e) => e.how === 'effect');
+  // From the first result read on ring 3. A bundled skill card is the app's
+  // own text on ring 2: in strict mode an effect after it, before any
+  // untrusted result, lands with no card by design (e2e/zeosChat.spec.ts).
+  const firstRead = outcome.log.findIndex((e) => e.how === 'read' && !e.trusted);
+  const effectsAfterRead =
+    firstRead === -1 ? [] : outcome.log.slice(firstRead + 1).filter((e) => e.how === 'effect');
   if (!attentionOnly) {
     // Strict: once a tool result has been read, no effect lands on its own.
     expect(effectsAfterRead, 'an effect landed without approval after reading tool output').toEqual([]);
