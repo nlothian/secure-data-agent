@@ -369,7 +369,10 @@ one run holds the main chat.
   the hidden segments get no attention, cannot demote, and raise no
   `mask.denied`. A call whose name was chosen masked gets a "name masked"
   badge (`ChatTrust.toolMasked`), the trust strip reads `strict+mask: …`, and
-  the dev journal gets a `ui.masked` line naming what was hidden. The model
+  the dev journal gets a `ui.masked` line naming what was hidden (the
+  kernel's own journal lines never reach that view: ZEOS
+  `ChatRun.journal_lines()` comes back empty after any `step`, which takes
+  them first, so only the site's `ui.*` lines show). The model
   worker runs the masked steps on a second cache (OptZeosWorker
   `maxTracks` 2), skipping the hidden runs, so the cost is a catch-up of the
   visible tokens since the last masked name plus a short run of the name's
@@ -382,13 +385,25 @@ one run holds the main chat.
   after the first ring-3 result and so was prefilled on both caches. Short
   prefill runs at 7k+ positions cost 0.3–0.8 s each (8–40 tokens), which is
   what a catch-up is. So it is off by default (the plan's bar was ~20%).
-  Behaviour: while the model names the tool, each hidden result is replaced
-  by a trusted note, "[result hidden while choosing the tool]" (ZEOS; the
-  note is ring 2 and visible). Before that a hidden result looked empty, and
-  in two of five masked `zeosInjection` runs (both strict) the model called
-  ListInputs again and again until the 10-call limit; the spec also ends a
-  turn on "Reached max tool iterations". The mask works in both gate modes
-  and is off by default; replayed `chat.history` turns stay hidden too.
+  Behaviour: while the model names the tool it reads a note in each hidden
+  delivery's place, `<tool_response>\n[result hidden while choosing the
+  tool]\n</tool_response>` for a tool result and "[earlier turn hidden while
+  choosing the tool]" for a replayed `chat.history` turn (ZEOS 7149bfc). The
+  note is the chat machine's framing, not anything a tool sent and not a
+  delivery on any ring; it is hidden on every other step, and it sits in the
+  hidden segment's own kernel block, so the mass a masked step pays it is
+  dropped with that block and never credited to the segment. An eviction
+  stub spliced over a hidden result stays hidden behind the same note. The
+  notes need a model worker whose blocks are one position (`blockSize: 1`,
+  as OptZeosWorker and the scripted stub report); ZEOS refuses masking on
+  any other. Before the notes a hidden result looked empty, and in two of
+  five masked `zeosInjection` runs (both strict) the model called ListInputs
+  again and again until the 10-call limit; the spec also ends a turn on
+  "Reached max tool iterations". With the notes, one masked `realModelSql`
+  run called CallSkill twice, ListInputs, then RunSQL once with its name
+  chosen masked, and no repeat (masking cost 2.9 s). The mask works in both
+  gate modes and is off by default; replayed `chat.history` turns stay
+  hidden too.
   Known limit: only the ring-3 deliveries are hidden, not what the model
   wrote after reading them, so if an injection got the model to write "I
   will now call WriteLines", that sentence is still visible while it names
