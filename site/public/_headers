@@ -1,8 +1,12 @@
-# No COOP/COEP in production: only the ZEOS Qwen 4B model needs a
-# cross-origin isolated page, and it is listed only in local-models / stub
-# dev mode, which astro.config.mjs `server.headers` isolates. Add the pair
-# here (/* with Cross-Origin-Opener-Policy: same-origin and
-# Cross-Origin-Embedder-Policy: credentialless) when ZEOS ships.
+# Cross-origin isolation on every page, as astro.config.mjs `server.headers`
+# does in dev and preview: the ZEOS kernel worker needs SharedArrayBuffer and
+# Atomics.wait. `credentialless` (not `require-corp`) keeps Google Fonts, the
+# Hugging Face Hub's CDN redirects, jsDelivr and remote CSV URLs loading
+# without CORP headers. Cloudflare Pages applies every matching rule, so a
+# /tour-data/* URL gets these as well as its own.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
 
 /tour-data/*
   Access-Control-Allow-Origin: *

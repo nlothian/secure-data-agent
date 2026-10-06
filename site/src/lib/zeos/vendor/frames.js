@@ -1,5 +1,5 @@
-// Vendored from ZEOS demo/coop-count-web/web/frames.js
-// at 0fbc6e511d20c5121180a26fc789c16825432aa4 by site/scripts/zeos-sync.mjs.
+// Vendored from ZEOS packages/zeos-browser/web/frames.js
+// at 91a5d269988f78dc4c4a6222eb3b98bbf35ca596 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -100,11 +100,20 @@ export function decodeFrame(bytes) {
  * `pieces`, every piece at once, because asking one round trip at a time costs seconds;
  * `partialPieces`, `[id, bytes]` for every id whose piece is not whole characters (it
  * holds U+FFFD), so `pieceBytes` is answered without a round trip per id; and `backend`,
- * which execution provider the worker runs on. */
-export async function serveRequest(worker, request) {
+ * which execution provider the worker runs on.
+ *
+ * A *begun* decode step (`request.begun`, sent by `SyncModelWorker.beginDecodeStep` or
+ * `NodeWorker.beginDecodeStep`) can be cancelled while it runs. A function cannot cross a
+ * frame, so the transport passes `shouldStop`, which reads its own abort signal (a slot of
+ * the shared buffer, or the latest cancel frame), and it is added to the step's options
+ * here. */
+export async function serveRequest(worker, request, { shouldStop = null } = {}) {
   try {
     let value;
-    if (request.method === "pieces") {
+    if (request.begun && request.method === "decodeStep" && shouldStop !== null) {
+      const [jobId, opts] = request.args;
+      value = await worker.decodeStep(jobId, { ...(opts ?? {}), shouldStop });
+    } else if (request.method === "pieces") {
       value = [];
       for (let id = 0; id < worker.meta.tokenizerSize; id++) value.push(worker.piece(id));
     } else if (request.method === "partialPieces") {

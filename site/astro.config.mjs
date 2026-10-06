@@ -3,6 +3,7 @@ import mdx from "@astrojs/mdx";
 import react from "@astrojs/react";
 import sourcecodePlugin from "./scripts/sourcecode-vite-plugin.mjs";
 import localModelsPlugin from "./scripts/local-models-vite-plugin.mjs";
+import ortWasmCdnPlugin from "./scripts/ort-wasm-cdn-vite-plugin.mjs";
 
 export default defineConfig({
   integrations: [mdx(), react()],
@@ -21,9 +22,8 @@ export default defineConfig({
   // `credentialless` rather than `require-corp`: cross-origin no-cors loads
   // (Google Fonts, the Hugging Face Hub's CDN redirects, jsDelivr) still
   // work without each host sending Cross-Origin-Resource-Policy; they are
-  // just fetched without cookies. Only dev and preview send them: ZEOS is
-  // listed only in local-models / stub dev mode, so production
-  // (public/_headers) is not isolated until ZEOS ships there.
+  // just fetched without cookies. These cover dev and preview; production
+  // sends the same pair from public/_headers.
   server: {
     headers: {
       'Access-Control-Allow-Origin': '*',
@@ -33,7 +33,9 @@ export default defineConfig({
   },
   vite: {
     // localModelsPlugin is a no-op unless PUBLIC_LOCAL_MODELS=1 (dev/e2e only).
-    plugins: [sourcecodePlugin(), localModelsPlugin()],
+    // ortWasmCdnPlugin is build-only: ORT's wasm comes from jsDelivr, since
+    // the file is over Cloudflare Pages' 25 MiB limit.
+    plugins: [sourcecodePlugin(), localModelsPlugin(), ortWasmCdnPlugin()],
     server: {
       cors: true,
     },
@@ -44,6 +46,8 @@ export default defineConfig({
     // as separate chunks rather than being inlined into one multi-MB blob.
     worker: {
       format: 'es',
+      // The LLM and ZEOS model workers bundle ORT, so they need it too.
+      plugins: () => [ortWasmCdnPlugin()],
     },
     // Under pnpm, @uiw/react-codemirror's ESM lives in a nested .pnpm path and
     // resolves @codemirror/state through its own symlinked deps, while the

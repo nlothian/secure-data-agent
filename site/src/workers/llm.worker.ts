@@ -56,18 +56,21 @@ import {
   prefillChunkEnds,
 } from '../lib/localLlm/kvReuse';
 import { LOCAL_GEMMA_DTYPE, isLocalModelsMode } from '../lib/localLlm/models';
-// ONNX Runtime's wasm glue, served from our own bundle. transformers.js
-// (src/backends/onnx.js) otherwise points `wasmPaths` at jsDelivr; with WebGPU
-// available it picks the `.asyncify` variant, so we ship exactly that one.
-// The onnxruntime-web resolved here is the version transformers.js pins.
-import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
-import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url';
+import { ortWasmPaths } from '../lib/localLlm/ortWasm';
 
-// transformers.js only reads `wasmPaths` lazily (`ensureWasmLoaded()` at the
-// first session creation), so overriding its import-time CDN default here is
-// enough.
+// ONNX Runtime's wasm glue (`.asyncify`, the variant ORT picks with WebGPU):
+// from our own bundle in dev, from jsDelivr in a production build
+// (`ortWasm.ts`). The onnxruntime-web resolved here is the version
+// transformers.js pins. transformers.js only reads `wasmPaths` lazily
+// (`ensureWasmLoaded()` at the first session creation), so `handleLoad`
+// awaits this before its first `from_pretrained`.
+const ortWasmReady: Promise<void> = env.backends.onnx.wasm
+  ? ortWasmPaths(env.backends.onnx.versions?.web).then((paths) => {
+      env.backends.onnx.wasm!.wasmPaths = paths;
+    })
+  : Promise.resolve();
+
 if (env.backends.onnx.wasm) {
-  env.backends.onnx.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
   // Single-threaded wasm, as before the site became cross-origin isolated
   // (COOP/COEP, for the ZEOS kernel). Without isolation ORT falls back to one
   // thread; with it ORT defaults to several pthreads, which made Gemma E4B
@@ -274,6 +277,7 @@ async function handleLoad(id: number, hfId: string, nextFamily: LlmModelFamily):
         return;
       }
       await disposeCurrent();
+      await ortWasmReady;
       const files = new Set<string>();
       const lastProgressAt = new Map<string, number>();
       const progress_callback = (info: ProgressInfo): void => {

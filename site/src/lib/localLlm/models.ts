@@ -36,6 +36,14 @@ export interface LocalGemmaModel {
    * transformers.js worker cannot run itself (`zeos-qwen`).
    */
   sideTaskModelId?: LocalGemmaId;
+  /**
+   * Where a model that transformers.js does not load (`zeos-qwen`) comes from
+   * outside local-models mode: a Hub repo pinned to one commit, read through
+   * ZEOS's `modelReader` and kept in OPFS under that key
+   * (`src/lib/zeos/vendor/model_cache.js`). `hfRepoId` still names its
+   * `/models/` directory and its `modelFiles.json` entry.
+   */
+  hubSource?: { repo: string; revision: string };
 }
 
 /**
@@ -44,8 +52,12 @@ export interface LocalGemmaModel {
  */
 export const LOCAL_GEMMA_DTYPE = 'q4f16' as const;
 
-/** Every model, including ones hidden outside dev (see `LOCAL_GEMMA_MODELS`). */
-export const ALL_LOCAL_MODELS: readonly LocalGemmaModel[] = [
+/**
+ * The models offered in every build. ZEOS Qwen 4B loads from `/models/` in
+ * local-models dev mode, from the Hub (`hubSource`, kept in OPFS) otherwise,
+ * or runs on the scripted stub in ZEOS stub mode.
+ */
+export const LOCAL_GEMMA_MODELS: readonly LocalGemmaModel[] = [
   {
     id: 'gemma-4-e2b',
     label: 'Gemma 4 E2B',
@@ -79,16 +91,24 @@ export const ALL_LOCAL_MODELS: readonly LocalGemmaModel[] = [
     approxBytes: 2_821_280_718,
     notes:
       'Qwen 3.5 4B under the ZEOS kernel: tool results are untrusted (ring 3), and ' +
-      'side-effecting tools need your approval once the model has read them. Local models only.',
+      'side-effecting tools need your approval once the model has read them. Needs WebGPU ' +
+      'with shader-f16.',
     sideTaskModelId: 'qwen3.5-4b',
+    // The commit ZEOS's own pages load (`zeos_browser.model_source`
+    // HF_REPO / HF_REVISION). A commit, never a branch: the cache keys
+    // files by it.
+    hubSource: {
+      repo: 'nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16',
+      revision: 'f71e07f80aa6d20f66c69575facae9813a053c5e',
+    },
   },
 ];
 
 /**
  * Dev only: the ZEOS model runs on a scripted stub model thread instead of the
  * real weights when localStorage `gda.zeos.stub` holds a stub script (see
- * `src/lib/zeos/zeosModelWorker.ts`). It also makes the ZEOS model selectable
- * outside local-models mode, which the chromium e2e project relies on.
+ * `src/lib/zeos/zeosModelWorker.ts`). Nothing is downloaded then, so the model
+ * counts as cached (`modelCache.ts`).
  */
 export const ZEOS_STUB_STORAGE_KEY = 'gda.zeos.stub';
 
@@ -101,18 +121,6 @@ export function isZeosStubMode(): boolean {
   }
 }
 
-function isModelShown(m: LocalGemmaModel): boolean {
-  if (m.family !== 'zeos-qwen') return true;
-  return isLocalModelsMode() || isZeosStubMode();
-}
-
-/**
- * The models offered in this build. ZEOS Qwen 4B is shown only in
- * local-models dev mode (`PUBLIC_LOCAL_MODELS=1`; its files are not on the
- * Hub) or ZEOS stub mode.
- */
-export const LOCAL_GEMMA_MODELS: readonly LocalGemmaModel[] = ALL_LOCAL_MODELS.filter(isModelShown);
-
 export function isZeosModel(m: LocalGemmaModel | undefined): boolean {
   return m?.family === 'zeos-qwen';
 }
@@ -122,7 +130,7 @@ export function isZeosModel(m: LocalGemmaModel | undefined): boolean {
  * `sideTaskModelId` for a model that worker cannot run.
  */
 export function transformersModelIdFor(id: string): string {
-  return ALL_LOCAL_MODELS.find((m) => m.id === id)?.sideTaskModelId ?? id;
+  return LOCAL_GEMMA_MODELS.find((m) => m.id === id)?.sideTaskModelId ?? id;
 }
 
 /**

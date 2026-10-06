@@ -1,5 +1,5 @@
-// Vendored from ZEOS demo/coop-count-web/web/opt_zeos_worker.js
-// at 0fbc6e511d20c5121180a26fc789c16825432aa4 by site/scripts/zeos-sync.mjs.
+// Vendored from ZEOS packages/zeos-browser/web/opt_zeos_worker.js
+// at 91a5d269988f78dc4c4a6222eb3b98bbf35ca596 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -76,6 +76,18 @@
  * hides on every step but the ones that choose a tool's name, say -- runs inside its
  * chunk under the key mask: skipping it would cut the chunk there, and at a few thousand
  * positions a run of the graph costs more than the positions it saves.
+ *
+ * **A step that can stop.** `decodeStep` also takes `maxChunk`, a smaller run length for
+ * this step (chunks are still cut at the snapshot positions and hidden runs), and
+ * `shouldStop`, asked before every run of the graph. When it answers true the step
+ * returns `{cancelled: true, resident, stats}` at once: the positions already run stay in
+ * the cache (`resident` of them), so the next step for the context resumes from there.
+ * Chunks are cut as a function of where they start and of `maxChunk`, so a step stopped
+ * and then resumed with the same `maxChunk` runs exactly the chunks it would have run
+ * uninterrupted, and chooses the same token bit for bit. Resumed with another
+ * `maxChunk`, the chunks after the stop are cut differently and agree only to float16
+ * rounding. Every answer carries `resident` and `stats` (`positions` run, `chunks`
+ * runs, `fillMs` spent in them, not counting a final one-position decode).
  */
 
 import { encodePlain, pieceBytes, sampleToken } from "./transformers_worker.js";
@@ -89,6 +101,17 @@ export const MAX_SNAPSHOTS = 16;
 export const MAX_TRACKS = 2;
 /** The shortest hidden run carried past rather than run (`skipHidden`). */
 export const MIN_SKIP = 16;
+
+/** Throw for a backend other than WebGPU, or for options `load` does not know: a caller
+ * passing one expects it to do something. */
+export function refuseOptions(where, backend, unknown) {
+  if (backend !== "webgpu") throw new Error(`${where}: backend ${backend} is not supported; the model runs on WebGPU only`);
+  const names = Object.keys(unknown);
+  if (names.length > 0) throw new Error(`${where}: unknown option${names.length > 1 ? "s" : ""} ${names.join(", ")}`);
+}
+
+/** What `fill` returns for a step `shouldStop` ended. */
+const STOPPED = Symbol("stopped");
 
 /** Whether a `meta.json` describes an OPT+ZEOS export rather than an `export_model.py`
  * one. */
@@ -243,13 +266,13 @@ class Context {
 export class OptZeosWorker {
   /**
    * @param {object} deps
-   * @param {object} deps.ort ONNX Runtime (`onnxruntime-web` or `onnxruntime-node`).
+   * @param {object} deps.ort ONNX Runtime Web's WebGPU build.
    * @param {object} deps.tokenizer a `Tokenizer` from `@huggingface/tokenizers`.
    * @param {object} deps.meta the export's `meta.json`.
    * @param {object} deps.embed an `InferenceSession` over the embedding graph.
    * @param {object} deps.decoder an `InferenceSession` over the decoder.
    * @param {string} deps.backend the execution provider both run on.
-   * @param {object} [deps.device] the `GPUDevice` ONNX Runtime runs on, for WebGPU.
+   * @param {object} deps.device the `GPUDevice` ONNX Runtime runs on.
    * @param {(activity: object) => void} [deps.onActivity] as `TransformersWorker`'s.
    * @param {number} [deps.snapshotEvery]
    * @param {number} [deps.maxSnapshots]
@@ -264,7 +287,7 @@ export class OptZeosWorker {
     embed,
     decoder,
     backend,
-    device = null,
+    device,
     onActivity = null,
     snapshotEvery = SNAPSHOT_EVERY,
     maxSnapshots = MAX_SNAPSHOTS,
@@ -338,33 +361,36 @@ export class OptZeosWorker {
   }
 
   /**
-   * Build a worker from an export's files.
+   * Build a worker from an export's files, on WebGPU.
    *
    * @param {object} options
    * @param {(name: string) => Uint8Array | Promise<Uint8Array>} options.read a file's bytes.
    * @param {(name: string) => Uint8Array | string | Promise<Uint8Array | string>} [options.source]
-   *   a graph or weights file as bytes, or as a path or URL ONNX Runtime reads itself.
-   *   `read` by default. Files with the same SHA-256 in `meta.files` are read once.
-   * @param {string} [options.backend] `webgpu`, `wasm`, or `cpu` (onnxruntime-node).
-   * @param {number} [options.numThreads] WebAssembly threads; 1 by default, so the CPU
-   *   fallback never needs a cross-origin isolated worker pool.
+   *   a graph or weights file as bytes, or as a URL ONNX Runtime reads itself. `read` by
+   *   default. Files with the same SHA-256 in `meta.files` are read once.
+   * @param {"webgpu"} [options.backend] the only backend; anything else is refused.
+   * @param {number} [options.numThreads] threads for the kernels ONNX Runtime still runs as
+   *   WebAssembly beside WebGPU; 1 by default, so no cross-origin isolated pool is needed.
+   * Any other option is refused, rather than ignored.
    */
   static async load({
     ort,
     Tokenizer,
     read,
     source = read,
-    backend = "wasm",
-    sessionOptions = {},
+    backend = "webgpu",
     numThreads = 1,
+    sessionOptions = {},
     onActivity = null,
     snapshotEvery,
     maxSnapshots,
     maxTracks,
     skipHidden,
     minSkip,
+    ...unknown
   }) {
-    if (ort.env?.wasm && backend !== "cpu") ort.env.wasm.numThreads = numThreads;
+    refuseOptions("OptZeosWorker.load", backend, unknown);
+    if (ort.env?.wasm) ort.env.wasm.numThreads = numThreads;
     const decoder = new TextDecoder();
     const json = async (name) => JSON.parse(decoder.decode(await read(name)));
     const meta = await json("meta.json");
@@ -380,7 +406,6 @@ export class OptZeosWorker {
       return value;
     };
     const base = (path) => path.replace(/^.*\//, "");
-    const webgpu = backend === "webgpu";
     const create = async (graph, outputs) => {
       const options = {
         executionProviders: [backend],
@@ -388,20 +413,17 @@ export class OptZeosWorker {
         ...sessionOptions,
       };
       const model = await file(graph.file);
-      // onnxruntime-node finds the data files beside a model it is given by path.
-      if (!(backend === "cpu" && typeof model === "string")) {
-        options.externalData = [];
-        for (const path of graph.externalData) {
-          options.externalData.push({ path: base(path), data: await file(path) });
-        }
+      options.externalData = [];
+      for (const path of graph.externalData) {
+        options.externalData.push({ path: base(path), data: await file(path) });
       }
-      if (webgpu) options.preferredOutputLocation = Object.fromEntries(outputs.map((n) => [n, "gpu-buffer"]));
+      options.preferredOutputLocation = Object.fromEntries(outputs.map((n) => [n, "gpu-buffer"]));
       return ort.InferenceSession.create(model, options);
     };
     const embed = await create(meta.embedTokens, ["inputs_embeds"]);
     const session = await create(meta.decoder, [...OptZeosWorker.presentNames(meta), "logits", "attention"]);
     bySha.clear();
-    const device = webgpu ? await ort.env.webgpu.device : null;
+    const device = await ort.env.webgpu.device;
     return new OptZeosWorker({
       ort,
       tokenizer,
@@ -493,7 +515,10 @@ export class OptZeosWorker {
     this.contexts.set(childId, ctx);
   }
 
-  async decodeStep(jobId, { allowedBlocks = null, allowedTokens = null, sample = null } = {}) {
+  async decodeStep(
+    jobId,
+    { allowedBlocks = null, allowedTokens = null, sample = null, shouldStop = null, maxChunk = null } = {},
+  ) {
     const ctx = this.ctx(jobId);
     const n = ctx.tokens.length;
     if (n === 0) throw new Error(`job ${jobId}: cannot decode an empty context`);
@@ -512,11 +537,18 @@ export class OptZeosWorker {
     if (allowedTokens !== null && allowedTokens.length < this.meta.vocabSize) {
       throw new RangeError(`job ${jobId}: allowedTokens covers ${allowedTokens.length} ids of ${this.meta.vocabSize}`);
     }
-    const { logits, attention } = await this.fill(ctx, allowed);
+    if (maxChunk !== null && !(Number.isInteger(maxChunk) && maxChunk >= 1)) {
+      throw new RangeError(`job ${jobId}: maxChunk ${maxChunk} is not a positive integer`);
+    }
+    const stats = { positions: 0, chunks: 0, fillMs: 0 };
+    const chunk = maxChunk === null ? this.chunk : Math.min(maxChunk, this.chunk);
+    const out = await this.fill(ctx, allowed, { chunk, shouldStop, stats });
+    if (out === STOPPED) return { cancelled: true, resident: ctx.track.kvLength, stats };
+    const { logits, attention } = out;
     const limit = this.meta.vocabSize;
     const tokenId =
       sample === null ? argmax(logits, allowedTokens, limit) : sampleToken(logits, allowedTokens, limit, sample);
-    return { tokenId, attention };
+    return { tokenId, attention, resident: ctx.track.kvLength, stats };
   }
 
   // -- outside the interface -------------------------------------------------------
@@ -629,46 +661,36 @@ export class OptZeosWorker {
     const { ort } = this;
     const dims = [1, this.kvHeads, n, this.headDim];
     const tensors = {};
-    if (this.device !== null) {
-      const row = this.headDim * 2; // bytes of one position of one head
-      const encoder = this.device.createCommandEncoder();
-      for (const [name] of this.kvNames) {
-        const dst = this.device.createBuffer({
-          // WebGPU zeroes a new buffer.
-          size: this.kvHeads * n * row,
-          // As ONNX Runtime's own storage buffers.
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        });
-        if (keep > 0) {
-          const src = kv.tensors[name].gpuBuffer;
-          for (let h = 0; h < this.kvHeads; h++) {
-            encoder.copyBufferToBuffer(src, h * length * row, dst, h * n * row, keep * row);
-          }
-        }
-        tensors[name] = ort.Tensor.fromGpuBuffer(dst, {
-          dataType: "float16",
-          dims,
-          dispose: () => dst.destroy(),
-        });
-      }
-      this.device.queue.submit([encoder.finish()]);
-    } else {
-      const row = this.headDim;
-      for (const [name] of this.kvNames) {
-        const src = kv.tensors[name].data;
-        const dst = new src.constructor(this.kvHeads * n * row);
+    const row = this.headDim * 2; // bytes of one position of one head
+    const encoder = this.device.createCommandEncoder();
+    for (const [name] of this.kvNames) {
+      const dst = this.device.createBuffer({
+        // WebGPU zeroes a new buffer.
+        size: this.kvHeads * n * row,
+        // As ONNX Runtime's own storage buffers.
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      if (keep > 0) {
+        const src = kv.tensors[name].gpuBuffer;
         for (let h = 0; h < this.kvHeads; h++) {
-          dst.set(src.subarray(h * length * row, h * length * row + keep * row), h * n * row);
+          encoder.copyBufferToBuffer(src, h * length * row, dst, h * n * row, keep * row);
         }
-        tensors[name] = new ort.Tensor("float16", dst, dims);
       }
+      tensors[name] = ort.Tensor.fromGpuBuffer(dst, {
+        dataType: "float16",
+        dims,
+        dispose: () => dst.destroy(),
+      });
     }
+    this.device.queue.submit([encoder.finish()]);
     return new Shared(tensors);
   }
 
-  /** Make a cache cover every position as `allowed` sees it, running what is missing,
-   * and return the last position's logits and attention. */
-  async fill(ctx, allowed) {
+  /** Make a cache cover every position as `allowed` sees it, running what is missing in
+   * runs of at most `chunk`, and return the last position's logits and attention; or
+   * `STOPPED`, with the positions run so far cached, if `shouldStop` answers true before
+   * a run. `stats` collects the runs. */
+  async fill(ctx, allowed, { chunk = this.chunk, shouldStop = null, stats = null } = {}) {
     const n = ctx.tokens.length;
     const track = this.select(ctx, allowed);
     // A step repeated with nothing appended runs its position again.
@@ -684,7 +706,7 @@ export class OptZeosWorker {
           continue;
         }
       }
-      let count = Math.min(this.chunk, n - start, boundary - start);
+      let count = Math.min(chunk, n - start, boundary - start);
       if (this.skipHidden) {
         for (let q = start + 1; q < start + count; q++) {
           if (!allowed[q] && allowed[q - 1] && this.skippable(allowed, q, n) > q) {
@@ -693,12 +715,19 @@ export class OptZeosWorker {
           }
         }
       }
+      if (shouldStop?.()) return STOPPED;
       const last = start + count === n;
       if (last) {
         track.previous?.state.release();
         track.previous = { pos: start, state: track.state.retain() };
       }
+      const began = performance.now();
       out = await this.run(ctx, track, start, count, allowed, last);
+      if (stats !== null) {
+        stats.positions += count;
+        stats.chunks += 1;
+        if (!(last && count === 1)) stats.fillMs += performance.now() - began;
+      }
     }
     return out;
   }

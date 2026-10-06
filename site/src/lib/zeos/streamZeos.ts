@@ -216,7 +216,7 @@ let session: Session | null = null;
 
 function defaultModel() {
   const m = getLocalGemmaModel('zeos-qwen3.5-4b');
-  if (!m) throw new Error('ZEOS Qwen 4B is not available in this build (local-models dev mode only).');
+  if (!m) throw new Error('ZEOS Qwen 4B is not available in this build.');
   return m;
 }
 
@@ -236,7 +236,11 @@ function engine(): Promise<ZeosChatEngine> {
             const done = typeof p.bytes === 'number' ? p.bytes : 0;
             const total = typeof p.bytes_total === 'number' ? p.bytes_total : 0;
             const pct = total > 0 ? ` · ${Math.round((100 * done) / total)}%` : '';
+            // `download` from the Hub or /models/, `cache` from OPFS, `verify`
+            // hashing a stored part before resuming it.
             if (p.phase === 'download') store.setStatus('starting', `Loading model${pct}`);
+            else if (p.phase === 'cache') store.setStatus('starting', `Loading model from cache${pct}`);
+            else if (p.phase === 'verify') store.setStatus('starting', `Verifying model${pct}`);
           },
         }));
     const started: Promise<ZeosChatEngine> = start().then(

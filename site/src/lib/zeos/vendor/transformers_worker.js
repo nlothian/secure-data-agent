@@ -1,5 +1,5 @@
-// Vendored from ZEOS demo/coop-count-web/web/transformers_worker.js
-// at 0fbc6e511d20c5121180a26fc789c16825432aa4 by site/scripts/zeos-sync.mjs.
+// Vendored from ZEOS packages/zeos-browser/web/transformers_worker.js
+// at 91a5d269988f78dc4c4a6222eb3b98bbf35ca596 by site/scripts/zeos-sync.mjs.
 // Do not edit here; change it in ZEOS and re-run `npm run zeos:sync`.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Metacognition AI
@@ -14,8 +14,7 @@
  *
  * This module owns token ids and caches and nothing else. Words, segments, rings and the
  * syscall grammar belong to the Python side (`JsMachine`), which calls the methods below.
- * It imports nothing: ONNX Runtime and the tokenizer class are handed in, so the same file
- * runs in a browser worker and under Node.
+ * It imports nothing: ONNX Runtime and the tokenizer class are handed in.
  *
  * `append` and `decodeStep` return promises, because `InferenceSession.run` does. The
  * synchronous `ZeosModelWorker` interface the Python side calls is `SyncModelWorker` in
@@ -36,6 +35,11 @@
  * the one the state was built under) goes back to the latest snapshot at or before the
  * position and runs the tokens after it again. `visibility` records, per cached position,
  * whether the state saw it, so the state always matches the mask of the step reading it.
+ *
+ * A decode step can also be told to stop (`shouldStop`, asked before every run of the
+ * graph, the final decode included) and given a smaller run length (`maxChunk`); a step
+ * that stops returns `{cancelled: true, resident, stats}` with what it ran still cached,
+ * and the next step resumes from there. `append`'s prefill is not interruptible.
  */
 
 /** Positions between two snapshots of a context's recurrent state: the most a cut ever
@@ -194,7 +198,7 @@ class Context {
 export class TransformersWorker {
   /**
    * @param {object} deps
-   * @param {object} deps.ort ONNX Runtime (`onnxruntime-web` or `onnxruntime-node`).
+   * @param {object} deps.ort ONNX Runtime Web's WebGPU build.
    * @param {object} deps.tokenizer a `Tokenizer` from `@huggingface/tokenizers`.
    * @param {object} deps.meta the export's `meta.json`.
    * @param {object} deps.session an `InferenceSession` over `model.onnx`.
@@ -225,9 +229,26 @@ export class TransformersWorker {
     this.stats = { reruns: 0, rerunPositions: 0 };
   }
 
-  /** Build a worker from the files an export wrote. `read(name)` returns a file's bytes
-   * as a Uint8Array (or a promise of them); `backend` is an execution provider name. */
-  static async load({ ort, Tokenizer, read, backend = "wasm", sessionOptions = {}, onActivity = null }) {
+  /** Build a worker from the files an export wrote, on WebGPU. `read(name)` returns a
+   * file's bytes as a Uint8Array (or a promise of them). `backend` may only be `webgpu`;
+   * `numThreads` (1 by default) is for the kernels ONNX Runtime still runs as WebAssembly
+   * beside WebGPU. Any other option is refused, rather than ignored. */
+  static async load({
+    ort,
+    Tokenizer,
+    read,
+    backend = "webgpu",
+    numThreads = 1,
+    sessionOptions = {},
+    onActivity = null,
+    ...unknown
+  }) {
+    if (backend !== "webgpu") {
+      throw new Error(`TransformersWorker.load: backend ${backend} is not supported; the model runs on WebGPU only`);
+    }
+    const names = Object.keys(unknown);
+    if (names.length > 0) throw new Error(`TransformersWorker.load: unknown option${names.length > 1 ? "s" : ""} ${names.join(", ")}`);
+    if (ort.env?.wasm) ort.env.wasm.numThreads = numThreads;
     const decoder = new TextDecoder();
     const json = async (name) => JSON.parse(decoder.decode(await read(name)));
     const meta = await json("meta.json");
@@ -314,7 +335,10 @@ export class TransformersWorker {
     this.contexts.set(childId, ctx);
   }
 
-  async decodeStep(jobId, { allowedBlocks = null, allowedTokens = null, sample = null } = {}) {
+  async decodeStep(
+    jobId,
+    { allowedBlocks = null, allowedTokens = null, sample = null, shouldStop = null, maxChunk = null } = {},
+  ) {
     const ctx = this.ctx(jobId);
     const n = ctx.tokens.length;
     if (n === 0) throw new Error(`job ${jobId}: cannot decode an empty context`);
@@ -330,12 +354,20 @@ export class TransformersWorker {
         throw new Error(`job ${jobId}: the mask hides every block, so nothing can be attended`);
       }
     }
+    if (maxChunk !== null && !(Number.isInteger(maxChunk) && maxChunk >= 1)) {
+      throw new RangeError(`job ${jobId}: maxChunk ${maxChunk} is not a positive integer`);
+    }
+    const stats = { positions: 0, chunks: 0, fillMs: 0 };
+    const chunk = maxChunk === null ? this.chunk : Math.min(maxChunk, this.chunk);
     // A second step with nothing appended in between computes the same position again.
     if (ctx.kvLength > n - 1) this.rewind(ctx, n - 1);
-    await this.fill(ctx, n - 1, allowed);
+    const filled = await this.fill(ctx, n - 1, allowed, { chunk, shouldStop, stats });
+    if (!filled || shouldStop?.()) return { cancelled: true, resident: ctx.kvLength, stats };
 
     const before = { pos: n - 1, state: ctx.state, conv: ctx.conv };
     const result = await this.run(ctx, n - 1, 1, allowed, "decode");
+    stats.positions += 1;
+    stats.chunks += 1;
     ctx.push(result, 1, allowed.subarray(n - 1, n));
     ctx.previous = before;
     ctx.mask = allowedBlocks === null ? null : allowed;
@@ -345,7 +377,7 @@ export class TransformersWorker {
       sample === null
         ? this.argmax(result.logits.data, allowedTokens)
         : sampleToken(result.logits.data, allowedTokens, limit, sample);
-    return { tokenId, attention: Float32Array.from(result.attention.data) };
+    return { tokenId, attention: Float32Array.from(result.attention.data), resident: ctx.kvLength, stats };
   }
 
   // -- outside the interface -------------------------------------------------------
@@ -406,8 +438,10 @@ export class TransformersWorker {
   }
 
   /** Make the cache cover positions [0, target) as `visible` (one entry per position,
-   * at least `target` of them) sees them, running the graph over what is missing. */
-  async fill(ctx, target, visible) {
+   * at least `target` of them) sees them, running the graph over what is missing in runs
+   * of at most `chunk`. False if `shouldStop` answered true before a run, with the runs
+   * so far cached; `stats` collects the runs. */
+  async fill(ctx, target, visible, { chunk = this.chunk, shouldStop = null, stats = null } = {}) {
     if (this.zeroState.length > 0) {
       let first = 0;
       while (first < ctx.kvLength && ctx.visibility[first] === visible[first]) first++;
@@ -416,10 +450,18 @@ export class TransformersWorker {
     while (ctx.kvLength < target) {
       const start = ctx.kvLength;
       const boundary = (Math.floor(start / SNAPSHOT_EVERY) + 1) * SNAPSHOT_EVERY;
-      const count = Math.min(this.chunk, target - start, boundary - start);
+      const count = Math.min(chunk, target - start, boundary - start);
+      if (shouldStop?.()) return false;
+      const began = performance.now();
       const result = await this.run(ctx, start, count, visible);
       ctx.push(result, count, visible.subarray(start, start + count));
+      if (stats !== null) {
+        stats.positions += count;
+        stats.chunks += 1;
+        stats.fillMs += performance.now() - began;
+      }
     }
+    return true;
   }
 
   /** One run of the graph over tokens [start, start + count) after a cache of `start`

@@ -126,6 +126,8 @@ export interface LlmActivityState {
    * Local model load in flight. `phase: 'fetch'` while files stream from the
    * network or the browser cache (`pct` is meaningful); `phase: 'init'` once
    * every file is in and ONNX Runtime is building the WebGPU session.
+   * `phase: 'verify'` (ZEOS model thread only) while the stored part of an
+   * interrupted download is hashed before it resumes.
    */
   modelDownload: LocalModelDownloadState | null;
 }
@@ -134,7 +136,7 @@ export interface LocalModelDownloadState {
   label: string;
   pct: number;
   fromCache: boolean;
-  phase: 'fetch' | 'init';
+  phase: 'fetch' | 'verify' | 'init';
 }
 
 export interface ExecutionPanelSnapshot {

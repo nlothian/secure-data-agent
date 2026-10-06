@@ -1,14 +1,17 @@
 {
-  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-integrate",
-  "remote": "https://github.com/metacognitionai/zeos.git",
-  "branch": "feat/zeos-integrate",
-  "commit": "0fbc6e511d20c5121180a26fc789c16825432aa4",
+  "repo": "/Users/nlothian/dev/github/metacognitionai/zeos",
+  "remote": "git@github.com:nlothian/zeos-webgpu-experiments.git",
+  "branch": "main",
+  "commit": "91a5d269988f78dc4c4a6222eb3b98bbf35ca596",
   "dirty": false,
   "files": {
-    "frames.js": "93f2598942765beef2b5063b482c39c3628e1c6af1c6036af772bf09ff87e027",
-    "model_channel.js": "4233f437d68f9bf2000019e28e62450f7c0b04b8e20463c925c72a0272c1ece2",
-    "stub_worker.js": "400a915ee73ab35d3384e33fb557fdcf3ffef4e9335ffd4b27f84f8fa61244ba",
-    "opt_zeos_worker.js": "982e25e64c54621fcb632340c72bc8dc628b166c47fde8af2358889b8bab8167",
-    "transformers_worker.js": "0f0600f605d6525fb826ac617a145d33dae6af686806c0fda372804bc61750e3"
+    "frames.js": "633ba7c653e4e80ff9b4a963a936cd72193ed2f2ea89ea7d830ed414f76dea3f",
+    "model_channel.js": "350e767a4095839029ab1f85de471f7d6062330f79f426cab2b5e5f278e3f69c",
+    "stub_worker.js": "0392da384fa98b42bbff1d3b6f1cd0d00c70f538ec1365c3b480fbc62eb7f179",
+    "opt_zeos_worker.js": "55703e8e8fb1b9338e166b5ca638d930cf27c5e21b6579b2da4a4ca8d3d8fba5",
+    "transformers_worker.js": "26126fe1c38806c2b5c09e1a4be418abc6cedb452ff7858d7e51b1046008db9a",
+    "model_cache.js": "e4ceabf13699e8fe704663a642702ed3dbcda03629dd4310b8f1d5c2469231d9",
+    "opfs_store.js": "2fb5ad6cbe446d0d1f301de56d9f02b1683fa576739c189574d4a57108eab335",
+    "sha256.js": "d8ac0133124edb22eb400d8ce5c732b6c59f3b16d0975b286084fe31ce3c6da3"
   }
 }

@@ -146,24 +146,37 @@ suite once before you finish.
   --project=chromium --last-failed`, or `-g '<title>'`) until they pass,
   then do the final full run.
 
+## Hosting
+
+Production is Cloudflare Pages (`secure-data-agent.nicklothian.com`): root
+`site/`, `npm run build`, output `dist`, with `public/_headers` honoured
+(COOP/COEP on every page, see below).
+Pages rejects any file over 25 MiB. ONNX Runtime's
+`ort-wasm-simd-threaded.asyncify.wasm` is ~26.9 MB, so a production build
+loads it (and its `.mjs`) from jsDelivr at the installed onnxruntime-web
+version. `src/lib/localLlm/ortWasm.ts` sets the workers' `wasmPaths`, and
+`scripts/ort-wasm-cdn-vite-plugin.mjs` rewrites ORT's own
+`new URL(…wasm, import.meta.url)` fallback, so the file is never emitted.
+Dev still serves it from node_modules. Keep every `dist/` file under 25 MiB.
+
 ## Cross-origin isolation (COOP/COEP)
 
-`astro dev` and `astro preview` serve every page with
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: credentialless` (`server.headers` in
-`site/astro.config.mjs`). Production (`site/public/_headers`) does not send
-them until ZEOS ships there: the ZEOS Qwen 4B model, the only thing that
-needs isolation, is listed only in local-models or stub dev mode. Isolation
+Every page is served with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`: by `astro dev` and
+`astro preview` from `server.headers` in `site/astro.config.mjs`, and in
+production from `site/public/_headers` (a `/*` rule; Pages applies it and
+the `/tour-data/*` rule together). Keep the two in step. Isolation
 makes `crossOriginIsolated` true, which the ZEOS kernel needs for
 `SharedArrayBuffer` + `Atomics.wait`; without it `startKernelChatEngine`
 fails at once with `NotCrossOriginIsolatedError` (the chat shows the
 reason and the trust indicator reads "ZEOS error"), before any download.
-Nothing else depends on it.
+Nothing else depends on it. Safari does not support COEP
+`credentialless`, so the page is not isolated there and ZEOS Qwen 4B fails
+with that error; the other models are unaffected.
 `credentialless` (not `require-corp`) keeps Google Fonts, the Hugging Face
 Hub's CDN redirects, jsDelivr (Pyodide, DuckDB-wasm) and remote CSV URLs
 working without CORP headers; cross-origin no-cors loads just go without
-cookies. Any new cross-origin iframe or popup must cope with this in dev,
-and in production once the headers move to `_headers`.
+cookies. Any new cross-origin iframe or popup must cope with this.
 Isolation also turns on ONNX Runtime's multi-threaded wasm by default,
 which made Gemma generation ~2.5x slower, so `src/workers/llm.worker.ts` pins
 `env.backends.onnx.wasm.numThreads = 1` (the pre-isolation behaviour, and
@@ -171,12 +184,18 @@ the same in production).
 
 ## ZEOS kernel (browser)
 
-ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
-314 worker, separate from the app's Pyodide 0.29 RunPython worker.
+ZEOS (`nlothian/zeos-webgpu-experiments`, a fork of `metacognitionai/zeos`)
+runs in its own Pyodide 314 worker, separate from the app's Pyodide 0.29
+RunPython worker.
 
-- `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds the `zeos`
-  and `zeos-coop-count-web` wheels with `uv`, and copies them plus the case
-  directories into `site/public/zeos/` with a `manifest.json` (wheel paths
+- `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds three
+  wheels with `uv`: `zeos` (the kernel), `zeos-browser` (from
+  `packages/zeos-browser`, import `zeos_browser`: JsMachine, page, token
+  mask, model workers) and `zeos-chat` (from `packages/zeos-chat`, import
+  `zeos_chat`: the chat machine and chat, with the chat-agent case inside the
+  wheel), and copies them plus the
+  `demo/coop-count/cases` directories into `site/public/zeos/` (so
+  `public/zeos/cases/` holds only those) with a `manifest.json` (wheel paths
   and sha256, cases, and the ZEOS remote, branch, commit and `dirty`; no
   local paths, since it is served). `ZEOS_REPO` is required; there is no
   default checkout. `public/zeos/` is **generated and gitignored**; re-run the
@@ -185,17 +204,21 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
   `emfs:`). Pyodide itself loads from jsDelivr at a pinned version without
   SRI (`loadPyodide` fetches its own files); its packages are checked
   against Pyodide's lock file.
-- Sync from the ZEOS checkout whose commit the site should run. The
-  integrated branch (`feat/zeos-integrate`: OPT chat, masked tool choice,
-  exact trusted results, spoof-anywhere) lives in the worktree
-  `/Users/nlothian/dev/github/metacognitionai/zeos-integrate`, so until it is
-  merged into the main checkout
-  (`/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`) run
-  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate npm run zeos:sync`.
-  The main checkout may hold someone else's uncommitted edits, which the
-  sync would build in (it records `dirty: true`).
-- The same script vendors ZEOS's JS (`frames.js`, `model_channel.js`,
-  `stub_worker.js`, `opt_zeos_worker.js`, `transformers_worker.js`) into
+- Sync from the ZEOS checkout whose commit the site should run: `main` of
+  the fork `nlothian/zeos-webgpu-experiments` (the package split, the
+  Hugging Face model cache, and the integrated chat work: OPT chat, masked
+  tool choice, exact trusted results, spoof-anywhere). Its checkout is
+  `/Users/nlothian/dev/github/metacognitionai/zeos`, whose `main` tracks the
+  fork's `origin/main` (`upstream` is `metacognitionai/zeos`); `git pull`
+  there, then run
+  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos npm run zeos:sync`.
+  The sync records `dirty: true` if that checkout holds uncommitted edits
+  under `src`, `packages` or `demo`, which it would build in.
+- The same script vendors ZEOS's JS from `packages/zeos-browser/web`
+  (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
+  `transformers_worker.js`, and `model_cache.js`, `opfs_store.js`,
+  `sha256.js`: ZEOS's Hugging Face loader and browser cache, vendored but not
+  imported by the site yet) into
   `site/src/lib/zeos/vendor/`, which **is committed**. `SOURCE.json` records
   the source: `repo` (the `ZEOS_REPO` path actually synced), `remote` (its
   `origin` URL), `branch`, `commit` and `dirty`. Do not edit vendored `.js`
@@ -234,17 +257,29 @@ Explainer's conversation, via `sideTaskConfig` / `transformersModelIdFor`)
 use `qwen3.5-4b` in the transformers.js worker, never the ZEOS session, whose
 one run holds the main chat.
 
-- **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
-  mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
-  zeosq4b`, which hard-links them from
-  `$ZEOS_REPO/demo/coop-count-web/models/Qwen3.5-4B-ZEOS-OPT`. After
+- **Selecting it.** It is listed in every build, production included.
+  Outside local-models mode it downloads from the Hub repo
+  `nlothian/Qwen3.5-4B-ZEOS-OPT_Q4F16` pinned at revision
+  `f71e07f80aa6d20f66c69575facae9813a053c5e` (`hubSource` in `models.ts`),
+  about 2.5 GB, through ZEOS's vendored `modelReader` (`model_cache.js`):
+  every file is checked against the SHA-256 and size in the export's
+  `meta.json`, and kept in OPFS under
+  `zeos-model-cache/<repo>/<revision>/` (`opfs_store.js`), so a reload reads
+  it from disk. An interrupted download resumes with a `Range` request, and
+  the storage quota is checked before the first large file. With
+  `PUBLIC_LOCAL_MODELS=1` the model thread reads `/models/<hfRepoId>/` with
+  no cache instead; for that, run `cd site && npm run models:fetch --
+  zeosq4b`, which hard-links the files from
+  `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
+  defaults to that checkout). After
   rebuilding the export, run `npm run models:manifest-local --
   metacognitionai/Qwen3.5-4B-ZEOS-OPT`, which rewrites its `modelFiles.json`
   entry from `meta.json`.
 - **Real model thread.** `createRealModelThread` in
   `src/lib/zeos/zeosModelWorker.ts` starts
   `src/workers/zeosOptModel.worker.ts`, which loads ZEOS `OptZeosWorker`
-  (vendored `opt_zeos_worker.js`) from `/models/<hfRepoId>/` with the app's
+  (vendored `opt_zeos_worker.js`) from the Hub cache or `/models/<hfRepoId>/`
+  (see above) with the app's
   own `onnxruntime-web` (pinned to the transformers.js build,
   1.31.0-dev.20260914, which runs the fused DeltaNet ops on WebGPU) and
   `@huggingface/tokenizers`, one wasm thread, and serves the
@@ -435,7 +470,7 @@ one run holds the main chat.
   Behaviour: while the model names the tool it reads a note in each hidden
   delivery's place, `<tool_response>\n[result hidden while choosing the
   tool]\n</tool_response>` for a tool result and "[earlier turn hidden while
-  choosing the tool]" for a replayed `chat.history` turn (ZEOS 7149bfc). The
+  choosing the tool]" for a replayed `chat.history` turn (ZEOS cf270f6). The
   note is the chat machine's framing, not anything a tool sent and not a
   delivery on any ring; it is hidden on every other step, and it sits in the
   hidden segment's own kernel block, so the mass a masked step pays it is
@@ -473,7 +508,9 @@ one run holds the main chat.
   Explainer reply streams (the picker is disabled with the reason).
 - **Crashes, Stop and stalls.** A kernel worker or model-thread crash, a
   model call past `ZEOS_MODEL_CALL_TIMEOUT_MS` (180 s, ~5x the first-turn
-  prefill), Pyodide's fatal error, or a kernel that stops making progress
+  prefill; after a timed-out call the vendored channel refuses every later
+  call with "model channel unusable", so the model thread is restarted, never
+  reused), Pyodide's fatal error, or a kernel that stops making progress
   (`ZEOS_MAX_IDLE_STEPS`, 64 `step` batches in a row with no events while the
   job is not waiting on `chat.user`: it waits on a delivery the loop will
   never make) disposes the kernel: the turn in flight ends with the error,

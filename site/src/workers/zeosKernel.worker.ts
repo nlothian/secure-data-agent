@@ -1,8 +1,8 @@
 /// <reference lib="webworker" />
 /**
  * The ZEOS kernel worker: Pyodide 314 (separate from the app's Pyodide 0.29
- * RunPython worker in src/lib/pyodide.ts), the `zeos` and
- * `zeos-coop-count-web` wheels, and the case files, all in one module worker.
+ * RunPython worker in src/lib/pyodide.ts), the `zeos`, `zeos-browser` and
+ * `zeos-chat` wheels, and the case files, all in one module worker.
  * The page drives it through src/lib/zeos/zeosHost.ts.
  *
  * It is a module worker because Pyodide 314 refuses to load in a classic one.
