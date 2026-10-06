@@ -1,7 +1,7 @@
 /**
  * The ZEOS chat as `streamZeos` drives it: one kernel worker + one model
  * thread per page (`startZeos`), and a `ChatRun` (ZEOS
- * `zeos_coop_count_web.chat`) per conversation, reached through the kernel
+ * `zeos_chat.chat`) per conversation, reached through the kernel
  * worker's generic RPC. `streamZeos` only sees the `ZeosChatEngine` /
  * `ZeosChatRun` interfaces, so its tests swap in a scripted engine.
  */
@@ -286,7 +286,7 @@ export async function startKernelChatEngine(
     },
     async open(opts) {
       const sampling = opts.sampling
-        ? await kernel.call<ZeosHandle>('zeos_coop_count_web.chat_machine', 'Sampling', [], {
+        ? await kernel.call<ZeosHandle>('zeos_chat.chat_machine', 'Sampling', [], {
             temperature: opts.sampling.temperature,
             top_k: opts.sampling.topK,
           })
@@ -294,7 +294,7 @@ export async function startKernelChatEngine(
       let run: ZeosHandle;
       try {
         run = await kernel.call<ZeosHandle>(
-          'zeos_coop_count_web.chat',
+          'zeos_chat.chat',
           'open_chat',
           [modelRef(attached.name)],
           {

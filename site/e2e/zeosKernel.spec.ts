@@ -22,12 +22,12 @@ test.describe('ZEOS kernel worker', () => {
       const kernel = await h.startZeosKernel({ onEvent: (k: string, d: unknown) => events.push([k, d]) });
       try {
         const dir = kernel.caseDir('coop-count-scripted');
-        const tapes = JSON.parse(await kernel.call('zeos_coop_count_web.page', 'tapes_json', [dir]));
+        const tapes = JSON.parse(await kernel.call('zeos_browser.page', 'tapes_json', [dir]));
         const model = await kernel.attachModel({
           modelWorker: h.createStubModelWorker,
           init: { tapes },
         });
-        const run = await kernel.call('zeos_coop_count_web.page', 'open_run', [dir, 'js'], {
+        const run = await kernel.call('zeos_browser.page', 'open_run', [dir, 'js'], {
           schedule: true,
           worker: h.modelRef(model.name),
           max_ticks: 200,

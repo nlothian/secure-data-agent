@@ -6,7 +6,7 @@
  * drop-in for a real model thread. Used by the smoke test
  * (e2e/zeosKernel.spec.ts) to exercise Pyodide + wheels + Atomics without a
  * multi-GB model. First message: `{ buffer, port, tapes }`, where `tapes` is
- * `zeos_coop_count_web.page.tapes_json(caseDir)` parsed.
+ * `zeos_browser.page.tapes_json(caseDir)` parsed.
  */
 import '../lib/zeos/vendor/stub_worker.js';
 import { serveChannel } from '../lib/zeos/vendor/model_channel.js';
@@ -22,9 +22,9 @@ self.onmessage = (event: MessageEvent) => {
   };
   try {
     const worker = globalThis.createStubWorker(tapes ?? {});
-    // serveRequest answers `pieces` from meta.tokenizerSize and `backend`
-    // from .backend; the in-process stub never needed either.
-    worker.meta = { tokenizerSize: worker.info().vocabSize };
+    // serveRequest answers `backend` from .backend, which the in-process
+    // stub never needed. (`pieces` reads meta.tokenizerSize, a getter on the
+    // stub itself; assigning `meta` would throw.)
     worker.backend = 'stub';
     let calls = 0;
     serveChannel(worker, buffer, (handle) => {

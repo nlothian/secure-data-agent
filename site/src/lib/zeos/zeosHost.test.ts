@@ -98,6 +98,12 @@ describe('zeosHost failure handling', () => {
     await expect(call).rejects.toThrow('ZeroDivisionError');
     expect(w.terminated).toBe(false);
     expect(isFatalKernelError({ name: 'PythonError', message: 'Pyodide already fatally failed' })).toBe(true);
+    expect(
+      isFatalKernelError({
+        name: 'PythonError',
+        message: 'model channel unusable: decodeStep (request 7) timed out after 180000 ms',
+      }),
+    ).toBe(true);
   });
 
   it('a kernel worker crash rejects the pending call and fires onDispose', async () => {

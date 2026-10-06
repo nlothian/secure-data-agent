@@ -377,7 +377,8 @@ describe('zeosAgentTools', () => {
 // reaches the same verdicts, so the UI never disagrees with the kernel. The
 // rules are the wheel's own (`_compile_rule` / `_rule_matches` and
 // `_exact_rule` / `_exact_matches` in chat_machine.py), imported from the
-// synced wheels in public/zeos (pure Python, so they import from the .whl).
+// synced wheels in public/zeos (`zeos_chat` imports `zeos` and `zeos_browser`,
+// so all three go on the path; pure Python, so they import from the .whl).
 const here = path.dirname(fileURLToPath(import.meta.url));
 const wheelDir = path.resolve(here, '..', '..', '..', 'public', 'zeos', 'wheels');
 const wheels = fs.existsSync(wheelDir)
@@ -392,20 +393,20 @@ const wheelImports =
   wheels.length > 0 &&
   spawnSync(
     'python3',
-    ['-c', 'import sys; sys.path[:0] = sys.argv[1:]; import zeos_coop_count_web.chat_machine', ...wheels],
+    ['-c', 'import sys; sys.path[:0] = sys.argv[1:]; import zeos_chat.chat_machine', ...wheels],
     { encoding: 'utf8' },
   ).status === 0;
 const parityReason = !python
   ? 'python3 not found'
   : wheels.length === 0
     ? 'public/zeos/wheels missing; run `npm run zeos:sync`'
-    : 'the wheel does not import under this python3';
+    : 'the wheels do not import under this python3';
 
 function runWheel(body: string, data: unknown): unknown {
   const script =
     'import json, sys\n' +
     'sys.path[:0] = sys.argv[1:]\n' +
-    'from zeos_coop_count_web import chat_machine as cm\n' +
+    'from zeos_chat import chat_machine as cm\n' +
     'data = json.load(sys.stdin)\n' +
     body;
   const out = spawnSync('python3', ['-c', script, ...wheels], { input: JSON.stringify(data), encoding: 'utf8' });

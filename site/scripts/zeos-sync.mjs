@@ -8,9 +8,10 @@
  * the wrong one (a checkout with someone else's uncommitted edits, or a stale
  * branch) is silent. CLAUDE.md names the checkout to sync from.
  *
- * 1. `uv build --wheel` for the `zeos` and `zeos-coop-count-web` packages,
- *    copied to `public/zeos/wheels/<sha256[0:12]>/<wheel>`. The directory is
- *    content-addressed because both wheels keep version 0.1.0 while their code
+ * 1. `uv build --wheel` for the `zeos`, `zeos-browser` and `zeos-chat`
+ *    packages, copied to `public/zeos/wheels/<sha256[0:12]>/<wheel>`. The
+ *    directory is content-addressed because the wheels keep version 0.1.0 while
+ *    their code
  *    changes, and micropip needs the URL to end in the real wheel filename.
  * 2. Every case directory under the case roots below, copied to
  *    `public/zeos/cases/<case>/`.
@@ -47,10 +48,14 @@ const zeosRepo = path.resolve(process.env.ZEOS_REPO);
 const publicOut = path.join(siteRoot, 'public', 'zeos');
 const vendorOut = path.join(siteRoot, 'src', 'lib', 'zeos', 'vendor');
 
-const PACKAGES = ['zeos', 'zeos-coop-count-web'];
-/** Directories whose immediate subdirectories are cases. Missing ones are skipped. */
-const CASE_ROOTS = ['demo/coop-count/cases', 'demo/coop-count-web/cases'];
-const WEB = 'demo/coop-count-web/web';
+/** `zeos_browser.page` drives a case run; `zeos_chat` is the chat agent. */
+const PACKAGES = ['zeos', 'zeos-browser', 'zeos-chat'];
+/**
+ * Directories whose immediate subdirectories are cases. Missing ones are
+ * skipped. The chat-agent case ships inside the `zeos-chat` wheel.
+ */
+const CASE_ROOTS = ['demo/coop-count/cases'];
+const WEB = 'packages/zeos-browser/web';
 /**
  * JS modules vendored verbatim (plus a header). `opt_zeos_worker.js` is the
  * real model (src/workers/zeosOptModel.worker.ts loads it); it imports
@@ -63,6 +68,12 @@ const VENDOR = [
   { file: 'stub_worker.js', required: true },
   { file: 'opt_zeos_worker.js', required: true },
   { file: 'transformers_worker.js', required: true },
+  // ZEOS's Hugging Face loader and browser cache (`model_cache.js` imports
+  // `sha256.js`). Not imported by the site yet: the model is served from
+  // /models/ in local-models dev mode.
+  { file: 'model_cache.js', required: true },
+  { file: 'opfs_store.js', required: true },
+  { file: 'sha256.js', required: true },
 ];
 
 function git(...args) {
@@ -97,7 +108,7 @@ try {
 }
 const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
 // uv.lock churn alone does not change what is built.
-const dirty = git('status', '--porcelain', '--', 'src', 'demo')
+const dirty = git('status', '--porcelain', '--', 'src', 'packages', 'demo')
   .split('\n')
   .filter(Boolean);
 console.log(`zeos ${branch}@${commit.slice(0, 12)}${dirty.length ? ' (dirty)' : ''}`);

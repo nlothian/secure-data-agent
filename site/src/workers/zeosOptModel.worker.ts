@@ -3,7 +3,7 @@
  * The real model thread for ZEOS Qwen 4B: ZEOS `OptZeosWorker` (vendored
  * `opt_zeos_worker.js`) over the OPT+ZEOS export, on WebGPU, served to the
  * kernel worker over the SharedArrayBuffer channel. A site port of ZEOS
- * `web/model_thread.js`, with the app's own onnxruntime-web (the build
+ * `packages/zeos-browser/web/model_thread.js`, with the app's own onnxruntime-web (the build
  * transformers.js pins, 1.31.0-dev, which runs the fused LinearAttention /
  * CausalConvWithState ops on WebGPU) and `@huggingface/tokenizers`.
  *

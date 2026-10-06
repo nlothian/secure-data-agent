@@ -66,7 +66,7 @@ describe('startKernelChatEngine', () => {
       thinking: false,
     });
     const open = kernelCalls.find((c) => c.fn === 'open_chat')!;
-    expect(open.module).toBe('zeos_coop_count_web.chat');
+    expect(open.module).toBe('zeos_chat.chat');
     expect(open.kwargs!.tool_classes).toBe(ZEOS_TOOL_CLASSES);
     expect(open.kwargs!.trusted_results).toBe(ZEOS_TRUSTED_RESULTS);
     expect(open.kwargs!.gate_mode).toBe('strict');

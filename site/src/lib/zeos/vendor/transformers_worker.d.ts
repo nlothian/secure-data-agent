@@ -1,6 +1,7 @@
 // Hand-written types for the vendored ./transformers_worker.js (not generated).
 // The site uses it only through ./opt_zeos_worker.js.
-import type { ZeosModelWorkerLike } from './model_channel';
+import type { DecodeStepOptions, ZeosModelWorkerLike } from './model_channel';
+import type { OptZeosStepResult } from './opt_zeos_worker';
 
 export const SNAPSHOT_EVERY: number;
 export function encodePlain(tokenizer: unknown, text: string): number[];
@@ -16,8 +17,18 @@ export function sampleToken(
   sample: { temperature: number; topK: number; u: number },
 ): number;
 
-/** ZEOS's transformers.js-export model worker (not used by the site). */
+/** ZEOS's transformers.js-export model worker (not used by the site). WebGPU only. */
 export class TransformersWorker implements ZeosModelWorkerLike {
+  /** Any option not listed is refused (it throws), as is a backend other than `webgpu`. */
+  static load(options: {
+    ort: unknown;
+    Tokenizer: unknown;
+    read: (name: string) => Uint8Array | Promise<Uint8Array>;
+    backend?: 'webgpu';
+    numThreads?: number;
+    sessionOptions?: Record<string, unknown>;
+    onActivity?: ((activity: Record<string, unknown>) => void) | null;
+  }): Promise<TransformersWorker>;
   constructor(deps: {
     ort: unknown;
     tokenizer: unknown;
@@ -38,8 +49,5 @@ export class TransformersWorker implements ZeosModelWorkerLike {
   append(jobId: string, ids: Int32Array | number[]): void | Promise<void>;
   truncate(jobId: string, n: number): void;
   fork(parentId: string, childId: string): void;
-  decodeStep(
-    jobId: string,
-    opts: { allowedBlocks: Uint8Array | null; allowedTokens: Uint8Array | null },
-  ): Promise<{ tokenId: number; attention: Float32Array | null }>;
+  decodeStep(jobId: string, opts: DecodeStepOptions): Promise<OptZeosStepResult>;
 }

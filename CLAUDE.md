@@ -186,9 +186,14 @@ the same in production).
 ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
 314 worker, separate from the app's Pyodide 0.29 RunPython worker.
 
-- `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds the `zeos`
-  and `zeos-coop-count-web` wheels with `uv`, and copies them plus the case
-  directories into `site/public/zeos/` with a `manifest.json` (wheel paths
+- `cd site && ZEOS_REPO=<checkout> npm run zeos:sync` builds three
+  wheels with `uv`: `zeos` (the kernel), `zeos-browser` (from
+  `packages/zeos-browser`, import `zeos_browser`: JsMachine, page, token
+  mask, model workers) and `zeos-chat` (from `packages/zeos-chat`, import
+  `zeos_chat`: the chat machine and chat, with the chat-agent case inside the
+  wheel), and copies them plus the
+  `demo/coop-count/cases` directories into `site/public/zeos/` (so
+  `public/zeos/cases/` holds only those) with a `manifest.json` (wheel paths
   and sha256, cases, and the ZEOS remote, branch, commit and `dirty`; no
   local paths, since it is served). `ZEOS_REPO` is required; there is no
   default checkout. `public/zeos/` is **generated and gitignored**; re-run the
@@ -197,17 +202,23 @@ ZEOS (`zeos-task2-transformers`) runs in its own Pyodide
   `emfs:`). Pyodide itself loads from jsDelivr at a pinned version without
   SRI (`loadPyodide` fetches its own files); its packages are checked
   against Pyodide's lock file.
-- Sync from the ZEOS checkout whose commit the site should run. The
-  integrated branch (`feat/zeos-integrate`: OPT chat, masked tool choice,
-  exact trusted results, spoof-anywhere) lives in the worktree
-  `/Users/nlothian/dev/github/metacognitionai/zeos-integrate`, so until it is
-  merged into the main checkout
-  (`/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`) run
-  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate npm run zeos:sync`.
-  The main checkout may hold someone else's uncommitted edits, which the
-  sync would build in (it records `dirty: true`).
-- The same script vendors ZEOS's JS (`frames.js`, `model_channel.js`,
-  `stub_worker.js`, `opt_zeos_worker.js`, `transformers_worker.js`) into
+- Sync from the ZEOS checkout whose commit the site should run. The site
+  runs the local branch `feat/zeos-integrate-split` (the integrated branch,
+  `feat/zeos-integrate`: OPT chat, masked tool choice, exact trusted results,
+  spoof-anywhere, rebased onto the package split; it is stacked on
+  `refactor/zeos-browser-split` and `feat/hf-model-cache`). It is local
+  only, nothing is pushed, and it lives in the worktree
+  `/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split`, so run
+  `ZEOS_REPO=/Users/nlothian/dev/github/metacognitionai/zeos-integrate-split npm run zeos:sync`.
+  The main checkout
+  (`/Users/nlothian/dev/github/metacognitionai/zeos-task2-transformers`) may
+  hold someone else's uncommitted edits, which the sync would build in (it
+  records `dirty: true`).
+- The same script vendors ZEOS's JS from `packages/zeos-browser/web`
+  (`frames.js`, `model_channel.js`, `stub_worker.js`, `opt_zeos_worker.js`,
+  `transformers_worker.js`, and `model_cache.js`, `opfs_store.js`,
+  `sha256.js`: ZEOS's Hugging Face loader and browser cache, vendored but not
+  imported by the site yet) into
   `site/src/lib/zeos/vendor/`, which **is committed**. `SOURCE.json` records
   the source: `repo` (the `ZEOS_REPO` path actually synced), `remote` (its
   `origin` URL), `branch`, `commit` and `dirty`. Do not edit vendored `.js`
@@ -249,7 +260,8 @@ one run holds the main chat.
 - **Selecting it.** It is listed only with `PUBLIC_LOCAL_MODELS=1` or in stub
   mode. Its files are not on the Hub. Run `cd site && npm run models:fetch --
   zeosq4b`, which hard-links them from
-  `$ZEOS_REPO/demo/coop-count-web/models/Qwen3.5-4B-ZEOS-OPT`. After
+  `$ZEOS_REPO/packages/zeos-browser/models/Qwen3.5-4B-ZEOS-OPT` (`ZEOS_REPO`
+  defaults to the zeos-integrate-split worktree here). After
   rebuilding the export, run `npm run models:manifest-local --
   metacognitionai/Qwen3.5-4B-ZEOS-OPT`, which rewrites its `modelFiles.json`
   entry from `meta.json`.
@@ -447,7 +459,7 @@ one run holds the main chat.
   Behaviour: while the model names the tool it reads a note in each hidden
   delivery's place, `<tool_response>\n[result hidden while choosing the
   tool]\n</tool_response>` for a tool result and "[earlier turn hidden while
-  choosing the tool]" for a replayed `chat.history` turn (ZEOS 7149bfc). The
+  choosing the tool]" for a replayed `chat.history` turn (ZEOS cf270f6). The
   note is the chat machine's framing, not anything a tool sent and not a
   delivery on any ring; it is hidden on every other step, and it sits in the
   hidden segment's own kernel block, so the mass a masked step pays it is
@@ -485,7 +497,9 @@ one run holds the main chat.
   Explainer reply streams (the picker is disabled with the reason).
 - **Crashes, Stop and stalls.** A kernel worker or model-thread crash, a
   model call past `ZEOS_MODEL_CALL_TIMEOUT_MS` (180 s, ~5x the first-turn
-  prefill), Pyodide's fatal error, or a kernel that stops making progress
+  prefill; after a timed-out call the vendored channel refuses every later
+  call with "model channel unusable", so the model thread is restarted, never
+  reused), Pyodide's fatal error, or a kernel that stops making progress
   (`ZEOS_MAX_IDLE_STEPS`, 64 `step` batches in a row with no events while the
   job is not waiting on `chat.user`: it waits on a delivery the loop will
   never make) disposes the kernel: the turn in flight ends with the error,

@@ -22,7 +22,7 @@
  *
  *   const kernel = await startZeosKernel({ onEvent });
  *   const model = await kernel.attachModel({ modelWorker: createStubModelWorker, init: { tapes } });
- *   const run = await kernel.call('zeos_coop_count_web.page', 'open_run',
+ *   const run = await kernel.call('zeos_browser.page', 'open_run',
  *     [kernel.caseDir('coop-count-pipe'), 'js'], { worker: modelRef(model.name) });
  *   const lines = await kernel.callMethod(run, 'step');
  *   kernel.dispose();
@@ -119,11 +119,13 @@ type Pending = { op: string; resolve: (v: unknown) => void; reject: (e: Error) =
 
 /**
  * Errors after which the kernel cannot be trusted with another request, so
- * `ZeosKernel` disposes itself: a model call that timed out (the channel may
- * then hand the next call this call's late reply), and Pyodide's own fatal
- * error (every later call fails the same way).
+ * `ZeosKernel` disposes itself: a model call that timed out, the channel
+ * refusing every call after a timeout or a stray reply ("model channel
+ * unusable"; it never recovers),
+ * and Pyodide's own fatal error (every later call fails the same way).
  */
-const FATAL_KERNEL_ERROR = /model worker did not answer .* within \d+ ms|Pyodide (?:has suffered a fatal error|already fatally failed)/;
+const FATAL_KERNEL_ERROR =
+  /model worker did not answer .* within \d+ ms|model channel unusable: |Pyodide (?:has suffered a fatal error|already fatally failed)/;
 
 export function isFatalKernelError(err: KernelError): boolean {
   return FATAL_KERNEL_ERROR.test(`${err.message}\n${err.traceback ?? ''}`);
