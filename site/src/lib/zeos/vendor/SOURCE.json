@@ -2,7 +2,7 @@
   "repo": "/Users/nlothian/dev/github/metacognitionai/zeos-integrate",
   "remote": "https://github.com/metacognitionai/zeos.git",
   "branch": "feat/zeos-integrate",
-  "commit": "0eafbabb0c5b1310fe0d30102771de685d134868",
+  "commit": "90eff0ce4f16548f9db88640e223e4805b52af65",
   "dirty": false,
   "files": {
     "frames.js": "93f2598942765beef2b5063b482c39c3628e1c6af1c6036af772bf09ff87e027",
