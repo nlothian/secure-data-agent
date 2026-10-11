@@ -183,7 +183,12 @@ function ApprovalCardBody({ pending, z }: { pending: zeosStore.ZeosPendingApprov
     else zeosStore.deny(pending.id);
   };
   return (
-    <div className="chat-zeos-approval" role="alertdialog" aria-label="Approve tool call">
+    <div
+      className="chat-zeos-approval"
+      role="alertdialog"
+      aria-label="Approve tool call"
+      data-tour-id="chat.zeosApproval"
+    >
       <div className="chat-zeos-approval-head">
         <span className="chat-zeos-approval-title">Approve {pending.name}?</span>
         <span className="chat-zeos-approval-demoted" data-mode={z.gateMode}>

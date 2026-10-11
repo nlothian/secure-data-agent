@@ -44,6 +44,6 @@ test.describe('Tour', () => {
 
     await page.getByRole('button', { name: 'Tour', exact: true }).click();
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText('This tour walks through these features');
+    await expect(dialog).toContainText('This tour downloads the model');
   });
 });

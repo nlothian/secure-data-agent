@@ -3,7 +3,7 @@ import type { TourStage } from '../types';
 const features: TourStage = {
   id: 'features',
   markdown:
-    'Toggle which agent features are enabled. The available features are: Data Loading, SQL, Python, React, Sub-agents.',
+    'Toggle which agent features are enabled. The available features are: Data Loading, SQL, Python, React, Sub-agents. ZEOS Qwen 4B always runs without sub-agents, so every tool call stays in the one conversation the kernel guards.',
   cutouts: ['exec.featureSelector'],
   onEnter: [
     { action: 'toggleFeatureSelector', params: { open: true } },
