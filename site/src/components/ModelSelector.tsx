@@ -219,7 +219,7 @@ export default function ModelSelector({
           </div>
         )}
         {pendingConfirm && (
-          <div className="chat-model-confirm" role="alert">
+          <div className="chat-model-confirm" role="alert" data-tour-id="chat.modelConfirm">
             <p className="chat-model-confirm-text">
               {pendingConfirm.model.label} is about{' '}
               {formatGB(pendingConfirm.bytes)} to download. It is fetched
@@ -231,7 +231,9 @@ export default function ModelSelector({
                 className="chat-model-apply"
                 onClick={modelSwitcher.apply}
               >
-                {pendingConfirm.forSend ? 'Download' : 'Apply'}
+                {pendingConfirm.forSend || pendingConfirm.model.id === resolvedActive?.id
+                  ? 'Download'
+                  : 'Apply'}
               </button>
               <button
                 type="button"

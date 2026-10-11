@@ -8,7 +8,7 @@ import watchConversation from './06-watch-conversation';
 import features from './07-features';
 import pythonPlot from './08-python-plot';
 import pythonOutput from './09-python-output';
-import subAgentsPipeline from './10-subagents-pipeline';
+import dataPipeline from './10-data-pipeline';
 import explainerSourcecode from './11-explainer-sourcecode';
 import sourcecodeView from './12-sourcecode-view';
 
@@ -24,7 +24,7 @@ export const DEFAULT_TOUR: TourDefinition = {
     features,
     pythonPlot,
     pythonOutput,
-    subAgentsPipeline,
+    dataPipeline,
     explainerSourcecode,
     sourcecodeView,
   ],

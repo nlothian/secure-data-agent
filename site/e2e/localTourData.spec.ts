@@ -8,8 +8,8 @@ import {
 
 // End-to-end coverage for LoadData against the same-origin tour CSV at
 // /tour-data/train.csv (served from site/public/tour-data/). The tour's
-// subagents-pipeline stage substitutes window.location.origin into the prompt
-// at typeMessage time — see site/src/lib/tour/stages/10-subagents-pipeline.ts
+// data-pipeline stage substitutes window.location.origin into the prompt
+// at typeMessage time — see site/src/lib/tour/stages/10-data-pipeline.ts
 // and the typeMessage substitution coverage in tour/__tests__/actions.test.ts.
 // This test guards against the static asset disappearing or the path being
 // renamed without the tour stage being updated in lockstep.

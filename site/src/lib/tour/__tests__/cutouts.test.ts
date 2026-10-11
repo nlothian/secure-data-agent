@@ -20,6 +20,8 @@ describe('cutout registry', () => {
       'chat.conversation',
       'chat.compactionRunButton',
       'chat.throbber',
+      'chat.modelConfirm',
+      'chat.zeosApproval',
       'exec.panel',
       'exec.featureSelector',
       'exec.explainerPanel',

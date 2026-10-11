@@ -241,8 +241,10 @@ function waitForPythonIdle(timeoutMs: number): Promise<void> {
  *
  * - `toggleModelDropdown` `{ open }` — open or close the model selection menu
  *   in the chat sidebar.
- * - `selectModel` `{ modelId }` — request a switch to the given local Gemma
- *   model id; user still confirms via the existing apply/cancel UI.
+ * - `selectModel` `{ modelId }` — request a switch to the given local model
+ *   id; the user still confirms via the existing download-size dialog. When
+ *   the model is already active but not downloaded, the dialog offers its
+ *   download.
  * - `typeMessage` `{ text, clearFirst? }` — set the chat textarea value. If
  *   `clearFirst` is true the existing input is replaced; otherwise the new
  *   text replaces the field outright (the bridge call uses `setInput`).

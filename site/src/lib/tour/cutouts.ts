@@ -14,6 +14,8 @@ export type CutoutId =
   | 'chat.conversation'
   | 'chat.compactionRunButton'
   | 'chat.throbber'
+  | 'chat.modelConfirm'
+  | 'chat.zeosApproval'
   | 'exec.panel'
   | 'exec.featureSelector'
   | 'exec.explainerPanel'
@@ -81,6 +83,18 @@ export const CUTOUTS: Record<CutoutId, CutoutDef> = {
     id: 'chat.throbber',
     selector: dt('chat.throbber'),
     label: 'Activity throbber ("Thinking", "Running Python", …)',
+    optional: true,
+  },
+  'chat.modelConfirm': {
+    id: 'chat.modelConfirm',
+    selector: dt('chat.modelConfirm'),
+    label: 'Model download-size dialog',
+    optional: true,
+  },
+  'chat.zeosApproval': {
+    id: 'chat.zeosApproval',
+    selector: dt('chat.zeosApproval'),
+    label: 'ZEOS approval card',
     optional: true,
   },
   'exec.panel': {

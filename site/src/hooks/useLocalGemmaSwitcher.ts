@@ -98,7 +98,9 @@ export default function useLocalGemmaSwitcher(
       const isAlreadyActive =
         config.activeEndpoint === LOCAL_GEMMA_ENDPOINT &&
         config.models[LOCAL_GEMMA_ENDPOINT] === modelId;
-      if (isAlreadyActive) {
+      // The active model, once cached or agreed to, needs nothing. Not yet
+      // downloaded (the first-visit default), picking it offers the download.
+      if (isAlreadyActive && hasDownloadConsent(modelId)) {
         setState({ phase: 'idle' });
         return;
       }
@@ -109,7 +111,8 @@ export default function useLocalGemmaSwitcher(
         try {
           const cached = await isModelCached(model);
           if (cached) {
-            commit(modelId);
+            if (isAlreadyActive) noteDownloadConsent(modelId);
+            else commit(modelId);
             setState({ phase: 'idle' });
           } else {
             setState({ phase: 'confirm', model, bytes: await uncachedBytes(model) });

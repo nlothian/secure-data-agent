@@ -36,7 +36,7 @@ will fail if a non-optional id is missing from the components.
 | Action                 | Params                                                  | Notes                                                                                                |
 | ---------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `toggleModelDropdown`  | `{ open: boolean }`                                     | Opens or closes the chat sidebar model menu via the chat bridge.                                     |
-| `selectModel`          | `{ modelId: string }`                                   | Requests a switch to a local Gemma model id. The user still confirms via the existing apply UI.      |
+| `selectModel`          | `{ modelId: string }`                                   | Requests a switch to a local model id (or, if already active but not downloaded, its download). The user confirms in the download-size dialog. |
 | `typeMessage`          | `{ text: string; clearFirst?: boolean }`                | Sets the chat textarea value. The bridge replaces the field with the new text.                       |
 | `pressStepButton`      | `{}`                                                    | Synthesises a click on the chat Step button via `document.querySelector`.                            |
 | `pressPlayButton`      | `{}`                                                    | Synthesises a click on the chat Play button via `document.querySelector`.                            |
