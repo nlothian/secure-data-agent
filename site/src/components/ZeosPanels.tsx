@@ -103,7 +103,7 @@ export function ZeosTrustIndicator({
     title = z.statusText || 'Starting the ZEOS kernel';
   } else if (open && z.integrity! >= 3) {
     state = 'demoted';
-    label = `${mode}: demoted${z.demotedBy ? ` by ${z.demotedBy}` : ''}`;
+    label = `${mode}: ${zeosStore.demotedText(z.demotedBy)}.`;
     title =
       'The model attended untrusted content, so the ZEOS kernel lowered this ' +
       "conversation's integrity to 3. Side-effecting tools need your approval.";
@@ -193,7 +193,7 @@ function ApprovalCardBody({ pending, z }: { pending: zeosStore.ZeosPendingApprov
         <span className="chat-zeos-approval-title">Approve {pending.name}?</span>
         <span className="chat-zeos-approval-demoted" data-mode={z.gateMode}>
           {pending.integrity >= 3
-            ? `${z.gateMode}: demoted${z.demotedBy ? ` by ${z.demotedBy}` : ''}`
+            ? `${z.gateMode}: ${zeosStore.demotedText(z.demotedBy)}.`
             : `${z.gateMode}: read tool output this turn`}
         </span>
       </div>

@@ -193,15 +193,19 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await boot(page, { attention: 'recent' });
     await send(page, 'What data is loaded? Save a note.');
     await expect(card(page)).toBeVisible({ timeout: 30_000 });
-    await expect(card(page)).toContainText('strict: demoted by ListInputs result #1');
-    await expect(trust(page)).toHaveText('strict: demoted by ListInputs result #1');
+    await expect(card(page)).toContainText('strict: Demoted by ListInputs result #1. The model measurably attended untrusted content.');
+    await expect(trust(page)).toHaveText(
+      'strict: Demoted by ListInputs result #1. The model measurably attended untrusted content.',
+    );
 
     await card(page).getByRole('button', { name: 'Deny' }).click();
     await expect(lastAssistant(page)).toContainText('Done: I handled the note.', { timeout: 60_000 });
     const writeLines = lastAssistant(page).locator('.chat-tool-call', { hasText: 'WriteLines' });
     await writeLines.locator('.chat-tool-summary').click();
     await expect(writeLines).toContainText('The user declined this tool call');
-    await expect(trust(page)).toHaveText('strict: demoted by ListInputs result #1');
+    await expect(trust(page)).toHaveText(
+      'strict: Demoted by ListInputs result #1. The model measurably attended untrusted content.',
+    );
   });
 
   test('attention-only (toggled in the UI): the same flow runs the effect without a card', async ({
@@ -439,8 +443,10 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await boot(page, { attention: 'recent', attentionOnly: true });
     await send(page, 'What data is loaded? Save a note.');
     await expect(card(page)).toBeVisible({ timeout: 30_000 });
-    await expect(card(page)).toContainText('attention: demoted by ListInputs result #1');
-    await expect(trust(page)).toHaveText('attention: demoted by ListInputs result #1');
+    await expect(card(page)).toContainText('attention: Demoted by ListInputs result #1. The model measurably attended untrusted content.');
+    await expect(trust(page)).toHaveText(
+      'attention: Demoted by ListInputs result #1. The model measurably attended untrusted content.',
+    );
     await card(page).getByRole('button', { name: 'Approve' }).click();
     await expect(lastAssistant(page)).toContainText('Done: I handled the note.', { timeout: 60_000 });
   });
@@ -592,7 +598,7 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await boot(page, { attention: 'recent', attentionOnly: true });
     await seedInput(page, 'empty.csv', 'a\n1\n');
     await send(page, 'What data is loaded? Save a note.');
-    await expect(card(page)).toContainText('attention: demoted by ListInputs result #1', { timeout: 30_000 });
+    await expect(card(page)).toContainText('attention: Demoted by ListInputs result #1. The model measurably attended untrusted content.', { timeout: 30_000 });
     await card(page).getByRole('button', { name: 'Approve' }).click();
     await expect(lastAssistant(page)).toContainText('Done: I handled the note.', { timeout: 60_000 });
 
@@ -605,7 +611,7 @@ test.describe('ZEOS Qwen 4B chat (scripted stub model)', () => {
     await page.reload();
     await send(page, 'Once more, please.');
     await expect(card(page)).toBeVisible({ timeout: 30_000 });
-    await expect(card(page)).toContainText('attention: demoted by an earlier turn (ListInputs result #1)');
+    await expect(card(page)).toContainText('attention: Demoted by an earlier turn (ListInputs result #1). The model measurably attended untrusted content.');
     await card(page).getByRole('button', { name: 'Deny' }).click();
     await expect(lastAssistant(page)).toContainText('Done: I handled the note.', { timeout: 60_000 });
   });
