@@ -27,6 +27,15 @@ export interface ZeosPendingApproval extends ZeosApproval {
   id: number;
 }
 
+/**
+ * Why a demoted job's effects need approval, without the gate-mode prefix:
+ * "Demoted by RunSQL result #2. The model measurably attended untrusted
+ * content." Shared by the trust indicator, the approval card and its reason.
+ */
+export function demotedText(demotedBy: string | null): string {
+  return `Demoted${demotedBy ? ` by ${demotedBy}` : ''}. The model measurably attended untrusted content`;
+}
+
 /** The kernel's spoof alarm: a delivery that spelled a kernel frame (inert data). */
 export interface ZeosSpoof {
   pipe: string | null;

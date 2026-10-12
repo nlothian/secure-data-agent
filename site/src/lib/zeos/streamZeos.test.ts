@@ -990,6 +990,8 @@ describe('streamZeos', () => {
     );
     expect(
       refusalReason({ ...base, integrity: 3, session_floor: 2 }, 'attention', 'ReadLines result #3'),
-    ).toBe('attention: demoted by ReadLines result #3, so WriteLines needs your approval.');
+    ).toBe(
+      'attention: Demoted by ReadLines result #3. The model measurably attended untrusted content, so WriteLines needs your approval.',
+    );
   });
 });

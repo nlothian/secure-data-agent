@@ -546,7 +546,7 @@ export function refusalReason(
   demotedBy: string | null,
 ): string {
   if (e.integrity >= EXTERNAL) {
-    return `${gateMode}: demoted${demotedBy ? ` by ${demotedBy}` : ''}, so ${e.name} needs your approval.`;
+    return `${gateMode}: ${store.demotedText(demotedBy)}, so ${e.name} needs your approval.`;
   }
   if ((e.session_floor ?? TRUSTED) >= EXTERNAL) {
     return `${gateMode}: read tool output this turn, so ${e.name} needs your approval.`;
